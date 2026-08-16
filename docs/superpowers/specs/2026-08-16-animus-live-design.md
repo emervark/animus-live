@@ -472,6 +472,8 @@ pub fn build_skinned_mesh(mp: &MeshPuppet, ppu: f32, pivot: Vec2) -> Result<Mesh
 
 **Limits enforced in `validate()` with a user-facing message, never a panic:**
 - ≤ **256 bones per puppet** — Bevy's `MAX_JOINTS` counts entries in `SkinnedMesh.joints`, and per §7.3 those are our bones. We target 10–60. If a user ever exceeds it, the bounded workaround is splitting into two skinned meshes sharing one solver.
+
+  > **M0-1 correction (2026-08-17):** 256 is *not* a hardware-independent ceiling. Reading `bevy_pbr/src/render/skin.rs`, `MAX_JOINTS = 256` bounds the **fallback uniform-buffer path**, taken only when `storage_buffers_are_unsupported(limits)`. On GPUs with storage buffers, Bevy uses a growable allocator with no such cap: 257 and 512 bones both ran clean, on two different discrete GPUs. So `validate()` must **not** hard-fail at 256 — that would be wrong on capable hardware and would still be silently wrong on uniform-buffer-only hardware, where the failure mode remains untested. Probe the limit at runtime, or warn rather than block. See `docs/spikes/m0-1-skinned-mesh.md`.
 - ≤ **4 influences per vertex** on the GPU. Authored attachments may exceed 4; `bake_influences` takes the top 4 by weight, renormalizes, and reports the maximum dropped mass so the UI can warn "vertex 812 lost 18% of its influence".
 
 **`BoneId` is not a bone index — map it, never cast it.** `Attachment.bone` is a `BoneId` drawn from the project-wide `IdAlloc`, which allocates one monotonic sequence across layers, puppets, joints, bones, assets and bindings alike. A puppet with three bones can hold `BoneId(17)`, `BoneId(23)`, `BoneId(24)`. The GPU palette, by contrast, is indexed densely from 0 in `SkeletonData.bones` insertion order. `CompiledRig` therefore provides `bone_index(BoneId) -> Option<u32>` alongside `joint_index`, and every path from an authored attachment to a `ATTRIBUTE_JOINT_INDEX` value goes through it. Using the raw ID as an index does not merely risk being wrong — it is wrong for essentially every real project, and it fails silently: vertices follow the wrong limb rather than crashing. Any test whose `BoneId`s happen to be contiguous from 0 will pass regardless, so fixtures must use deliberately non-contiguous, out-of-order IDs.
@@ -735,6 +737,10 @@ A second `Window` entity in `WindowMode::BorderlessFullscreen(MonitorSelection::
 
 Bevy renders and presents both windows in one frame loop. If the editor is on a 144 Hz panel and the projector is 60 Hz Fifo, the loop may be throttled by the slower present. Plan: editor `PresentMode::AutoNoVsync`, output `AutoVsync`. If they remain coupled, fall back to rendering the editor viewport every other frame — **the output must never drop frames.** Measured in M0-4.
 
+> **M0-4 answer (2026-08-17):** they are coupled, and the plan above targets the wrong half. Measured on a 165Hz laptop panel with a 4K/30Hz output display: **only the output window's present mode matters.** Output on `AutoVsync` clamps the *entire application* to ~29fps no matter what the editor is set to; setting the editor to `AutoNoVsync` changes nothing. Setting the **output** to `AutoNoVsync` restores 138–185fps. The rule is: the application's frame rate is set by the slowest vsync-enabled window. Rendering the editor viewport at half rate does not address this, because the cost is presentation, not editor work.
+>
+> **Decision:** expose vsync as an operator-facing toggle on the output window rather than picking for them — tear-free projector at the cost of a slow editor, or the reverse — and note that the Spout path sidesteps the coupling entirely, since another process then owns the projector window. See `docs/spikes/m0-4-second-window.md`.
+
 ### 11.4 Panic affordances
 
 - **`Esc`** while the output window has focus → despawn the output window and camera. Bevy has no built-in `close_on_esc`; write it.
@@ -781,6 +787,13 @@ Honest cost at **1080p60 BGRA8**:
 - ~1–2 ms CPU memcpy in the readback, plus another inside Spout's `SendImage`, plus the receiver's upload. Budget **3–4 ms of CPU per frame** out of 16.6 ms.
 - **Latency: 1–3 frames (16–50 ms).** Bevy's `Readback` is async; the map completes at least one frame after submission and drivers often add another. Acceptable for VJ work; **noticeable for an interactive-mirror installation where a performer sees themselves. This must be stated in the docs.**
 - **At 4K60 the readback path is ~2 GB/s and ~12 ms of memcpy — not viable.** Above 1080p, Path A is mandatory. Document the supported resolutions honestly.
+
+> **M0-3 measurements (2026-08-17), RTX 3070 Laptop, DX12:**
+> - **Path A is dead, for a reason not listed above.** `spout2-rs` 0.1.1's sender always creates its own private D3D12 device and offers no way to pass ours in, and D3D11On12 requires the same device. The resource-state problem predicted as "the most likely reason Path A fails" is never even reached. This is a property of the library, not of the GPU.
+> - **Latency is better than stated:** 1 frame at 1080p (~7.5 ms), under one OBS frame — not the 1–3 frames / 16–50 ms claimed. 2 frames at 4K.
+> - **The 4K verdict survives, but the reasoning does not.** The in-observer readback cost is 4.05 ms, nowhere near 12 ms. What matters is whole-application frame time: 7.5–10 ms at 1080p versus **16–19 ms at 4K, i.e. 53–61 fps**. The readback timer accounts for under half of that difference; the rest is elsewhere in the pipeline. So 4K lands on or below a 60fps target with no headroom for the editor workload — measure whole-frame cost, never the observer duration, before promising a resolution.
+> 
+> See `docs/spikes/m0-3-spout.md`.
 
 **Decision: implement Path B first and ship it.** Path A is an M4 optimization with a hard timebox. `FrameSink` makes it a swap, not a rewrite.
 
@@ -1191,9 +1204,17 @@ In this order, because each unblocks the next:
 
 ---
 
-## 22. Prerequisites on this machine
+## 22. Prerequisites
 
-- **Rust is not installed.** Needs `rustup` (stable toolchain, `x86_64-pc-windows-msvc`).
+Per development machine, not per project. Both machines used so far are Windows.
+
+- **Rust** — `rustup`, stable toolchain, `x86_64-pc-windows-msvc`. Installed on both
+  machines (1.97.1 as of 2026-08-17).
 - **Visual Studio Build Tools with the MSVC linker** — mandatory for Bevy on Windows.
-- Git 2.49 is present.
-- Optional for later milestones: `ffmpeg` on PATH (recording), NDI Runtime (NDI output), OBS with the Spout2 plugin (verifying Spout).
+- Git.
+- **OBS + the Spout2 plugin** for verifying Spout output. Installed on the laptop
+  (OBS 32.2.1, plugin 1.12.0); this is what M0-3 was confirmed against.
+- Optional for later milestones: `ffmpeg` on PATH (recording), NDI Runtime (NDI output).
+
+A second display is required to exercise the output path at all, and one capable of
+60Hz is required to meet M0-4's stated bar — see `docs/spikes/m0-4-second-window.md`.
