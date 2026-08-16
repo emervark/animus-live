@@ -129,9 +129,12 @@ proptest! {
 
         prop_assert_eq!(x.mesh.positions, y.mesh.positions);
         prop_assert_eq!(x.mesh.triangles, y.mesh.triangles);
-        prop_assert_eq!(
-            x.attachments.entries.len(),
-            y.attachments.entries.len()
-        );
+        // Full content, not just count: `IndexRemap::from_deletions` masks
+        // victims by a boolean array keyed on vertex index (see remap.rs),
+        // so the resulting remap -- and therefore every surviving
+        // attachment's remapped vertex, bone, weight and local coords --
+        // must be identical regardless of which order [a, b] was passed
+        // in, not merely the same length.
+        prop_assert_eq!(x.attachments.entries, y.attachments.entries);
     }
 }

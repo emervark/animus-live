@@ -26,17 +26,24 @@ fn fixture_dir() -> PathBuf {
         .join("sample-project")
 }
 
-/// Build the worked-example project. `assets_root` is where the puppet's
-/// texture source bytes are written before being imported through the
-/// real `AssetStore` — so the asset's `sha256` in the fixture is a real
-/// hash of real bytes, not a hand-typed placeholder.
+/// Build the worked-example project. `assets_root` is the `AssetStore`
+/// root the puppet's texture is imported into through the real
+/// `AssetStore` — so the asset's `sha256` in the fixture is a real hash of
+/// real bytes, not a hand-typed placeholder. Callers should pass the same
+/// directory they later `save` the project to, so the resulting project
+/// directory is self-contained (`project.json` plus a real `assets/`
+/// tree it can actually resolve), not just a JSON file naming a hash that
+/// exists nowhere on disk. The staging file the source bytes are written
+/// to before import lives in its own scratch tempdir, not `assets_root`,
+/// so nothing but `assets/` ends up alongside `project.json`.
 fn build_fixture(assets_root: &Path) -> Project {
     let mut p = Project::new("Fixture Puppet Show");
     p.meta.created_utc = "2026-08-16T00:00:00Z".to_string();
     p.meta.modified_utc = "2026-08-16T00:00:00Z".to_string();
 
     // One content-addressed texture asset, imported through the real store.
-    let texture_src = assets_root.join("hero-source.png");
+    let scratch = tempfile::tempdir().unwrap();
+    let texture_src = scratch.path().join("hero-source.png");
     std::fs::write(&texture_src, b"a small fixture texture, not a real PNG").unwrap();
     let mut store = AssetStore::new(assets_root);
     let texture_id = AssetId(p.alloc_id());
@@ -160,7 +167,7 @@ fn build_fixture(assets_root: &Path) -> Project {
 fn spec_worked_example_matches_the_committed_fixture() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Fixture.animus");
-    let project = build_fixture(dir.path());
+    let project = build_fixture(&root);
     save(&project, &root).unwrap();
 
     let generated = std::fs::read_to_string(root.join("project.json")).unwrap();
@@ -192,9 +199,8 @@ fn spec_worked_example_matches_the_committed_fixture() {
 #[test]
 #[ignore = "maintenance tool: regenerates the committed spec fixture on purpose"]
 fn regenerate_spec_fixture() {
-    let dir = tempfile::tempdir().unwrap();
     let target = fixture_dir();
     std::fs::create_dir_all(&target).unwrap();
-    let project = build_fixture(dir.path());
+    let project = build_fixture(&target);
     save(&project, &target).unwrap();
 }

@@ -152,7 +152,7 @@ pub struct AttachmentTable {
     pub entries: Vec<Attachment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Attachment {
     pub vertex: u32,
     pub bone: BoneId,

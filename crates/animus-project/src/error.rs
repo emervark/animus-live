@@ -28,9 +28,6 @@ pub enum ProjectError {
     #[error("project schema version {found} is newer than the {supported} this build supports")]
     SchemaTooNew { found: u32, supported: u32 },
 
-    #[error("missing asset with hash {sha256}")]
-    MissingAsset { sha256: String },
-
     #[error("migration from schema {from} to {to} failed: {reason}")]
     Migration { from: u32, to: u32, reason: String },
 }

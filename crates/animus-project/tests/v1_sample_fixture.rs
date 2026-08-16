@@ -33,12 +33,17 @@ fn fixture_dir() -> PathBuf {
         .join("v1_sample")
 }
 
+/// `assets_root` is the `AssetStore` root the puppet's texture is imported
+/// into. Callers should pass the same directory they later `save` the
+/// project to (see `spec_fixture.rs`'s `build_fixture` doc comment for
+/// why) so the resulting project directory is self-contained.
 fn build_fixture(assets_root: &Path) -> Project {
     let mut p = Project::new("Migration Corpus");
     p.meta.created_utc = "2026-08-16T00:00:00Z".to_string();
     p.meta.modified_utc = "2026-08-16T00:00:00Z".to_string();
 
-    let texture_src = assets_root.join("arm-source.png");
+    let scratch = tempfile::tempdir().unwrap();
+    let texture_src = scratch.path().join("arm-source.png");
     std::fs::write(&texture_src, b"a small fixture texture, not a real PNG").unwrap();
     let mut store = AssetStore::new(assets_root);
     let texture_id = AssetId(p.alloc_id());
@@ -230,7 +235,7 @@ fn build_fixture(assets_root: &Path) -> Project {
 fn v1_sample_fixture_matches_the_committed_copy() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("Arm.animus");
-    let project = build_fixture(dir.path());
+    let project = build_fixture(&root);
     save(&project, &root).unwrap();
 
     let generated = std::fs::read_to_string(root.join("project.json")).unwrap();
@@ -259,9 +264,8 @@ fn v1_sample_fixture_matches_the_committed_copy() {
 #[test]
 #[ignore = "maintenance tool: regenerates the committed v1_sample fixture on purpose"]
 fn regenerate_v1_sample_fixture() {
-    let dir = tempfile::tempdir().unwrap();
     let target = fixture_dir();
     std::fs::create_dir_all(&target).unwrap();
-    let project = build_fixture(dir.path());
+    let project = build_fixture(&target);
     save(&project, &target).unwrap();
 }
