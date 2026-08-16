@@ -179,6 +179,11 @@ not measured here -- **user checklist item**.
       an actual 60Hz projector, and confirm whether the output window's
       frame rate ever drops below 60Hz in any configuration -- that is the
       one thing that actually matters per the plan.
+- [x] **10-minute stability run — DONE 2026-08-17, unattended.** See
+      "Ten minutes on the TV" below. No drift, p99 within 3.5ms of the
+      refresh interval, and the only large spike is window creation.
+      **Not covered:** the run was passive; the checklist also asked for
+      active editor interaction throughout, which still needs a human.
 - [ ] **10-minute stability run.** Leave both windows running for 10
       minutes while actively dragging/interacting with the editor window.
       Record the output window's frame time: minimum, maximum, and 99th
@@ -334,3 +339,40 @@ Taken with the user 2026-08-16:
 Context for the numbers: the display used here was a hotel TV at 4K/30Hz,
 close to the worst case obtainable. Projectors and LED walls in normal use
 run at higher refresh rates, so 29fps is a floor, not a typical figure.
+
+
+## Ten minutes on the TV
+
+18000 frames with the output window borderless-fullscreen on the 4K/30Hz TV,
+on AC power, output vsync on, no interaction. Zero errors, zero warnings.
+
+| Metric | Value |
+|---|---|
+| p50 | 33.333 ms (exactly the 30Hz interval) |
+| p95 | 35.361 ms |
+| p99 | 36.798 ms |
+| p99.9 | 63.461 ms (one skipped interval) |
+| worst | 267.955 ms, **at frame 2** |
+| frames over 2x the mean | 7 of 17998 (0.039%) |
+| per-minute mean dt | 33.43, 33.33, 33.33, 33.36, 33.37, 33.36, 33.33, 33.33, 33.33, 33.34 |
+
+**No drift.** The per-minute means stay within 0.1 ms of each other across
+ten minutes, and the whole-run mean (33.351 ms) sits 0.02 ms off the display
+interval.
+
+The instrumentation had to be extended to answer this, and the gap is worth
+recording. The stats component tracked only min/max/mean, and **a mean pinned
+to the refresh rate is equally consistent with a perfectly even run and with
+one that drops a frame every second** — the checklist asked for a 99th
+percentile precisely because no combination of min/max/mean can distinguish
+them. min/max also could not say *when* the worst spike happened, which is
+the difference between a harmless window-creation hitch and a visible fault
+mid-show. It now records every frame's dt for percentiles, the frame index of
+the worst spike, and a per-minute rolling mean for drift.
+
+Applying that to the first 10-minute run, whose 299 ms maximum was
+unexplained: the rerun puts the worst frame at index 2. Startup, not drift.
+
+**Caveat:** this run was passive. The checklist asks for the same run *while
+actively dragging and interacting with the editor window*, which no automated
+run can supply here.

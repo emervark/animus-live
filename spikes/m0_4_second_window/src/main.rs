@@ -109,6 +109,20 @@ struct WindowFrameStats {
     min_dt_ms: f64,
     max_dt_ms: f64,
     sum_dt_ms: f64,
+    /// Which frame the worst spike landed on. min/max alone cannot
+    /// distinguish a 300ms hitch during window creation -- harmless -- from
+    /// the same hitch twenty minutes into a show, which is a visible fault.
+    max_dt_frame: u32,
+    /// Every frame's dt, for percentiles. The stability check asks for a
+    /// 99th percentile, which no combination of min/max/mean can supply: a
+    /// mean pinned to the refresh rate is equally consistent with a
+    /// perfectly even run and with one that drops a frame every second.
+    samples: Vec<f32>,
+    /// Rolling per-minute means, to expose drift that a whole-run average
+    /// would average away.
+    minute_marks: Vec<(u32, f64)>,
+    minute_sum_ms: f64,
+    minute_frames: u32,
 }
 
 #[derive(Resource, Default)]
@@ -341,6 +355,18 @@ fn track_window_frame_times(time: Res<Time>, mut query: Query<&mut WindowFrameSt
             }
             if dt_ms > stats.max_dt_ms {
                 stats.max_dt_ms = dt_ms;
+                stats.max_dt_frame = stats.frames;
+            }
+            stats.samples.push(dt_ms as f32);
+
+            stats.minute_sum_ms += dt_ms;
+            stats.minute_frames += 1;
+            if stats.minute_sum_ms >= 60_000.0 {
+                let mean = stats.minute_sum_ms / stats.minute_frames as f64;
+                let frame = stats.frames;
+                stats.minute_marks.push((frame, mean));
+                stats.minute_sum_ms = 0.0;
+                stats.minute_frames = 0;
             }
         }
         stats.last_instant = Some(now);
@@ -366,6 +392,39 @@ fn auto_close_and_report(
                 0.0
             };
             let fps = if avg > 0.0 { 1000.0 / avg } else { 0.0 };
+
+            let mut sorted = s.samples.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let pct = |p: f64| -> f64 {
+                if sorted.is_empty() {
+                    return 0.0;
+                }
+                let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
+                sorted[idx] as f64
+            };
+            println!(
+                "[m0-4] percentiles: p50={:.3} p95={:.3} p99={:.3} p99.9={:.3} worst={:.3}ms at frame {}",
+                pct(0.50),
+                pct(0.95),
+                pct(0.99),
+                pct(0.999),
+                s.max_dt_ms,
+                s.max_dt_frame,
+            );
+            let over_2x = sorted.iter().filter(|&&d| (d as f64) > 2.0 * avg).count();
+            println!(
+                "[m0-4] frames over 2x the mean: {over_2x} of {} ({:.3}%)",
+                sorted.len(),
+                100.0 * over_2x as f64 / sorted.len().max(1) as f64,
+            );
+            if !s.minute_marks.is_empty() {
+                let marks: Vec<String> = s
+                    .minute_marks
+                    .iter()
+                    .map(|(f, m)| format!("f{f}:{m:.2}ms"))
+                    .collect();
+                println!("[m0-4] per-minute mean dt: {}", marks.join(" "));
+            }
             println!(
                 "[m0-4] window camera stats: frames={} avg_dt_ms={avg:.3} min_dt_ms={:.3} max_dt_ms={:.3} approx_fps={fps:.1}",
                 s.frames, s.min_dt_ms, s.max_dt_ms,
