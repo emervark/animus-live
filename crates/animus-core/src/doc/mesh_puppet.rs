@@ -129,6 +129,10 @@ pub struct Bone {
     #[serde(default)]
     pub rest_length: Option<f32>,
     pub stiffness: f32,
+    /// Reserved for a future per-bone damping model; ignored by the v1
+    /// reference solver, which applies only `SolverConfig::global_damping`
+    /// (see `CompiledRig::build`). Implementing per-bone damping is a
+    /// solver change, not a document-model one.
     pub damping: f32,
     /// Squash/stretch, animatable. 1.0 is rest length.
     #[serde(default = "one")]

@@ -17,10 +17,10 @@ mod marching;
 mod rdp;
 pub(crate) mod topology;
 
-pub use fallback::{bounding_box_ring, convex_hull_ring};
+pub use fallback::{bounding_box_ring, convex_hull_ring, grid_ring};
 pub use topology::signed_area;
 
-use crate::doc::AutoMeshParams;
+use crate::doc::{AutoMeshMode, AutoMeshParams};
 use glam::Vec2;
 use image::RgbaImage;
 
@@ -40,20 +40,66 @@ pub enum SilhouetteError {
     NoOpaqueRegion,
 }
 
-/// Extracts silhouette rings from an image's alpha channel.
+/// A ring with real (non-degenerate) area — the bar a fallback ring must
+/// clear before it counts as "usable" rather than a phantom fed by a
+/// single opaque pixel or a handful of collinear ones.
+fn is_usable(r: &Ring) -> bool {
+    r.points.len() >= 3 && signed_area(&r.points).abs() > 0.0
+}
+
+/// Extracts silhouette rings from an image's alpha channel, dispatching on
+/// `params.mode`:
 ///
-/// Pipeline: alpha-threshold to a binary mask, close (dilate then erode) to
-/// merge anti-aliasing speckle into the body, trace with marching squares,
-/// simplify each ring with closed-ring RDP, then classify/normalize/clean
-/// up topology.
+/// - [`AutoMeshMode::Silhouette`]: alpha-threshold to a binary mask, close
+///   (dilate then erode) to merge anti-aliasing speckle into the body,
+///   trace with marching squares, simplify each ring with closed-ring RDP,
+///   then classify/normalize/clean up topology. If every resulting region
+///   is filtered out by `params.min_region_area_px` despite the image
+///   having opaque pixels, falls back down the spec §6.2 ladder: convex
+///   hull, then bounding box, rather than leaving the artist with nothing.
+/// - [`AutoMeshMode::ConvexHull`]: [`convex_hull_ring`] directly, no
+///   marching squares.
+/// - [`AutoMeshMode::BoundingBox`]: [`bounding_box_ring`] directly.
+/// - [`AutoMeshMode::Grid`]: [`grid_ring`] directly, tiled at
+///   `params.interior_spacing_px`.
 ///
 /// An image with no pixel at or above `params.alpha_threshold` is a genuine
-/// error ([`SilhouetteError::NoOpaqueRegion`]): there is nothing to
-/// extract. An image that *does* have opaque pixels, but where every
-/// resulting region falls below `params.min_region_area_px`, is not an
-/// error — a too-small region is a normal, expected filtering outcome, not
-/// a failure of the algorithm — so that case returns `Ok(vec![])`.
+/// error ([`SilhouetteError::NoOpaqueRegion`]) in every mode: there is
+/// nothing to extract. In `Silhouette` mode, an image that *does* have
+/// opaque pixels, but where every resulting region falls below
+/// `params.min_region_area_px` AND the fallback ladder also finds nothing
+/// usable, is not an error — a too-small region is a normal, expected
+/// filtering outcome, not a failure of the algorithm — so that case
+/// returns `Ok(vec![])`.
 pub fn extract(img: &RgbaImage, params: &AutoMeshParams) -> Result<Vec<Ring>, SilhouetteError> {
+    match params.mode {
+        AutoMeshMode::ConvexHull => {
+            let hull = convex_hull_ring(img, params.alpha_threshold);
+            return if is_usable(&hull) {
+                Ok(vec![hull])
+            } else {
+                Err(SilhouetteError::NoOpaqueRegion)
+            };
+        }
+        AutoMeshMode::BoundingBox => {
+            let bbox = bounding_box_ring(img, params.alpha_threshold);
+            return if is_usable(&bbox) {
+                Ok(vec![bbox])
+            } else {
+                Err(SilhouetteError::NoOpaqueRegion)
+            };
+        }
+        AutoMeshMode::Grid => {
+            let grid = grid_ring(img, params.alpha_threshold, params.interior_spacing_px);
+            return if grid.is_empty() {
+                Err(SilhouetteError::NoOpaqueRegion)
+            } else {
+                Ok(grid)
+            };
+        }
+        AutoMeshMode::Silhouette => {}
+    }
+
     let mask = alpha::alpha_mask(img, params.alpha_threshold);
     if !mask.pixels().any(|p| p.0[0] > 0) {
         return Err(SilhouetteError::NoOpaqueRegion);
@@ -67,7 +113,24 @@ pub fn extract(img: &RgbaImage, params: &AutoMeshParams) -> Result<Vec<Ring>, Si
         .map(|r| rdp::simplify_closed_ring(r, params.rdp_epsilon_px))
         .collect();
 
-    Ok(topology::build_rings(simplified, params.min_region_area_px))
+    let rings = topology::build_rings(simplified, params.min_region_area_px);
+    if !rings.is_empty() {
+        return Ok(rings);
+    }
+
+    // Fallback ladder (spec §6.2 c, d): the image has opaque pixels (we
+    // already checked above), but every candidate region fell below
+    // `min_region_area_px`. Degrade to a convex hull, then a bounding box,
+    // of the same opaque pixels rather than returning nothing.
+    let hull = convex_hull_ring(img, params.alpha_threshold);
+    if is_usable(&hull) {
+        return Ok(vec![hull]);
+    }
+    let bbox = bounding_box_ring(img, params.alpha_threshold);
+    if is_usable(&bbox) {
+        return Ok(vec![bbox]);
+    }
+    Ok(rings)
 }
 
 #[cfg(test)]
@@ -207,6 +270,72 @@ mod tests {
                 assert!(a > 0.0, "outer must be CCW, got area {a}");
             }
         }
+    }
+
+    #[test]
+    fn convex_hull_mode_dispatches_to_the_convex_hull_fallback() {
+        let mut p = params();
+        p.mode = AutoMeshMode::ConvexHull;
+        let rings = extract(&load("blob.png"), &p).unwrap();
+        assert_eq!(rings.len(), 1);
+        assert!(!rings[0].is_hole);
+        // A convex hull of a circle has real area, unlike the degenerate
+        // (zero-point) case.
+        assert!(signed_area(&rings[0].points).abs() > 1000.0);
+    }
+
+    #[test]
+    fn bounding_box_mode_dispatches_to_the_bounding_box_fallback() {
+        let mut p = params();
+        p.mode = AutoMeshMode::BoundingBox;
+        let rings = extract(&load("blob.png"), &p).unwrap();
+        assert_eq!(rings.len(), 1);
+        assert_eq!(rings[0].points.len(), 4, "a bounding box is a quad");
+        assert!(!rings[0].is_hole);
+    }
+
+    #[test]
+    fn grid_mode_dispatches_to_the_grid_fallback() {
+        let mut p = params();
+        p.mode = AutoMeshMode::Grid;
+        let rings = extract(&load("blob.png"), &p).unwrap();
+        assert!(
+            rings.len() > 1,
+            "a grid tiling of the bounding box should yield more than one cell, got {}",
+            rings.len()
+        );
+        assert!(rings.iter().all(|r| !r.is_hole));
+    }
+
+    #[test]
+    fn a_fully_transparent_image_errors_in_every_mode() {
+        for mode in [
+            AutoMeshMode::Silhouette,
+            AutoMeshMode::ConvexHull,
+            AutoMeshMode::BoundingBox,
+            AutoMeshMode::Grid,
+        ] {
+            let mut p = params();
+            p.mode = mode;
+            let err = extract(&load("fully_transparent.png"), &p).unwrap_err();
+            assert!(matches!(err, SilhouetteError::NoOpaqueRegion));
+        }
+    }
+
+    #[test]
+    fn silhouette_mode_falls_back_to_convex_hull_when_every_region_is_too_small() {
+        // one_pixel.png has a single opaque pixel: marching squares +
+        // min_region_area_px filtering finds nothing usable in Silhouette
+        // mode, but there IS an opaque pixel, so the fallback ladder
+        // (spec 6.2 c, d) should degrade to a real ring rather than
+        // silently returning nothing.
+        let mut p = params();
+        p.min_region_area_px = 1_000_000.0; // guarantee the real pipeline finds nothing
+        let rings = extract(&load("blob.png"), &p).unwrap();
+        assert!(
+            !rings.is_empty(),
+            "an image with real opaque area must not fall all the way through to empty"
+        );
     }
 
     #[test]

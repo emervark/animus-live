@@ -103,3 +103,63 @@ pub fn bounding_box_ring(img: &RgbaImage, threshold: u8) -> Ring {
         is_hole: false,
     }
 }
+
+/// Tiles the opaque-pixel bounding box into a regular grid of square outer
+/// [`Ring`]s, each `cell_size` px on a side (rows/columns at the far edge
+/// clipped to the bounding box). `cell_size <= 0.0` falls back to a quarter
+/// of the box's longer side (at least 1px), so a caller passing
+/// `interior_spacing_px` unmodified always gets a sane tiling.
+///
+/// Unlike [`bounding_box_ring`]'s single quad, a grid of many small quads
+/// gives the CDT real internal edges to deform along — this is the
+/// distinct "bounding-box grid" fallback of spec §6.2, not a second name
+/// for a plain bounding box.
+///
+/// Always succeeds (returns `Vec::new()`) on an image with no opaque
+/// pixels; never panics.
+pub fn grid_ring(img: &RgbaImage, threshold: u8, cell_size: f32) -> Vec<Ring> {
+    let points = opaque_points(img, threshold);
+    if points.is_empty() {
+        return Vec::new();
+    }
+    let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+    let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+    for p in &points {
+        min_x = min_x.min(p.x);
+        min_y = min_y.min(p.y);
+        max_x = max_x.max(p.x);
+        max_y = max_y.max(p.y);
+    }
+
+    let cell = if cell_size > 0.0 {
+        cell_size
+    } else {
+        ((max_x - min_x).max(max_y - min_y) / 4.0).max(1.0)
+    };
+
+    let mut rings = Vec::new();
+    let mut y = min_y;
+    while y < max_y {
+        let y1 = (y + cell).min(max_y);
+        let mut x = min_x;
+        while x < max_x {
+            let x1 = (x + cell).min(max_x);
+            let mut corners = vec![
+                Vec2::new(x, y),
+                Vec2::new(x1, y),
+                Vec2::new(x1, y1),
+                Vec2::new(x, y1),
+            ];
+            if signed_area(&corners) < 0.0 {
+                corners.reverse();
+            }
+            rings.push(Ring {
+                points: corners,
+                is_hole: false,
+            });
+            x += cell;
+        }
+        y += cell;
+    }
+    rings
+}
