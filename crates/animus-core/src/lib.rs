@@ -8,3 +8,4 @@ pub mod doc;
 pub mod ids;
 pub mod mesh;
 pub mod remap;
+pub mod solver;
