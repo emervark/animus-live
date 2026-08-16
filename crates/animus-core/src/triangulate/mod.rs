@@ -285,4 +285,31 @@ mod tests {
         let b = poisson_disc(&[square(200.0)], 20.0, 7);
         assert_eq!(a, b, "same seed must give the same points");
     }
+
+    // Defensive-code coverage: `cdt::build`'s `n < 3` skip and the
+    // no-outer-rings path in `points::poisson_disc` had no test exercising
+    // them. Neither degenerate input should panic; both should come back
+    // as a well-formed (possibly empty) mesh.
+
+    #[test]
+    fn an_empty_ring_slice_produces_an_empty_mesh_without_panicking() {
+        let m = triangulate(&[], &params(25.0), (100, 100)).unwrap();
+        assert!(m.positions.is_empty());
+        assert!(m.triangles.is_empty());
+        assert_eq!(m.uvs.len(), m.positions.len());
+    }
+
+    #[test]
+    fn a_ring_with_fewer_than_three_points_is_skipped_without_panicking() {
+        let degenerate = Ring {
+            points: vec![Vec2::new(0.0, 0.0), Vec2::new(10.0, 10.0)],
+            is_hole: false,
+        };
+        let m = triangulate(&[degenerate], &params(25.0), (100, 100)).unwrap();
+        assert_eq!(m.triangles.len() % 3, 0);
+        assert_eq!(m.uvs.len(), m.positions.len());
+        for i in &m.triangles {
+            assert!((*i as usize) < m.positions.len());
+        }
+    }
 }

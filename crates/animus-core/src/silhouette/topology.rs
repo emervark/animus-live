@@ -30,7 +30,14 @@ pub fn signed_area(points: &[Vec2]) -> f32 {
 }
 
 /// Ray-casting point-in-polygon test (even-odd rule).
-fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
+///
+/// `pub(crate)`, not private: `triangulate::filter` uses this exact
+/// predicate to classify triangle centroids against the same rings this
+/// module classifies as holes vs. outer boundary. Keeping one copy means a
+/// future fix to an edge case (e.g. a vertex sitting exactly on the cast
+/// ray) can't leave `silhouette` and `triangulate` disagreeing about what
+/// is inside the shape.
+pub(crate) fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
     let n = poly.len();
     let mut inside = false;
     let mut j = n - 1;

@@ -65,6 +65,17 @@ pub(super) struct RawMesh {
 /// Bit-exact position dedup: `FaceHandle::positions()` returns copies of
 /// the exact `f32`s stored at insertion, so two faces sharing a vertex
 /// return bit-identical `Point2`s for it — no epsilon comparison needed.
+///
+/// This holds only because `build` below never calls
+/// `add_constraint_and_split`: that method synthesizes *new* intersection
+/// vertices with computed (not passed-through) coordinates when a
+/// constraint edge crosses another. If constraint-splitting is ever added
+/// here — e.g. to tolerate a self-intersecting silhouette more gracefully
+/// than failing with `ConstraintFailed` — this bit-exact dedup would
+/// silently stop merging coincident vertices, leaving the mesh with
+/// duplicate vertices at the same position that tear apart under
+/// deformation, with no obvious cause. Switch to a small-epsilon spatial
+/// dedup at that point.
 fn dedup_index(p: Vec2, positions: &mut Vec<Vec2>, index_of: &mut HashMap<(u32, u32), u32>) -> u32 {
     let key = (p.x.to_bits(), p.y.to_bits());
     *index_of.entry(key).or_insert_with(|| {

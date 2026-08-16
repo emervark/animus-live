@@ -15,7 +15,7 @@ mod alpha;
 mod fallback;
 mod marching;
 mod rdp;
-mod topology;
+pub(crate) mod topology;
 
 pub use fallback::{bounding_box_ring, convex_hull_ring};
 pub use topology::signed_area;

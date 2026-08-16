@@ -8,47 +8,30 @@
 //! a concave exterior both come back tiled with triangles.
 
 use crate::silhouette::Ring;
+use crate::silhouette::topology::point_in_polygon;
 use glam::Vec2;
-
-/// Ray-casting point-in-polygon (even-odd rule). Deliberately re-implemented
-/// here rather than reused: the equivalent helper in
-/// `silhouette::topology` is private to that module.
-pub(super) fn point_in_ring(p: Vec2, ring: &[Vec2]) -> bool {
-    let n = ring.len();
-    if n < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut j = n - 1;
-    for i in 0..n {
-        let pi = ring[i];
-        let pj = ring[j];
-        if (pi.y > p.y) != (pj.y > p.y) {
-            let x_at_p_y = (pj.x - pi.x) * (p.y - pi.y) / (pj.y - pi.y) + pi.x;
-            if p.x < x_at_p_y {
-                inside = !inside;
-            }
-        }
-        j = i;
-    }
-    inside
-}
 
 /// True if `p` lies inside at least one outer ring and inside no hole
 /// ring. Used both to keep interior Poisson-disc samples on-shape
 /// (`points.rs`) and to filter triangle centroids (below).
+///
+/// Point-in-polygon itself is `silhouette::topology::point_in_polygon`
+/// (widened to `pub(crate)` for this), not a second copy of the same
+/// ray-casting predicate — `silhouette` and `triangulate` must agree on
+/// what "inside" means, or hole classification and triangle filtering
+/// could disagree about the same point.
 pub(super) fn inside_shape(p: Vec2, rings: &[Ring]) -> bool {
     let in_outer = rings
         .iter()
         .filter(|r| !r.is_hole)
-        .any(|r| point_in_ring(p, &r.points));
+        .any(|r| point_in_polygon(p, &r.points));
     if !in_outer {
         return false;
     }
     !rings
         .iter()
         .filter(|r| r.is_hole)
-        .any(|r| point_in_ring(p, &r.points))
+        .any(|r| point_in_polygon(p, &r.points))
 }
 
 /// Drops triangles whose centroid is outside every outer ring or inside
