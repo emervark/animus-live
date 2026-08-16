@@ -1,9 +1,11 @@
 # M0-2 — egui_dock with a render-to-texture viewport
 
-Spike crate: `spikes/m0_2_egui_viewport`. Run with:
+Spike crate: `spikes/m0_2_egui_viewport`. Run from the `spikes/` directory (Cargo
+discovers the shared-target-dir config by walking up from the working
+directory, not from `--manifest-path`):
 
 ```
-cargo run --release --manifest-path spikes/m0_2_egui_viewport/Cargo.toml -- [--auto-close <frames>]
+cargo run --release --manifest-path m0_2_egui_viewport/Cargo.toml -- [--auto-close <frames>]
 ```
 
 ## Verified four-crate egui version set
@@ -16,7 +18,7 @@ egui_dock = "=0.19.1"
 ```
 
 ```
-$ cargo tree --manifest-path spikes/m0_2_egui_viewport/Cargo.toml -i egui
+$ cargo tree --manifest-path m0_2_egui_viewport/Cargo.toml -i egui
 egui v0.34.3
 ├── bevy_egui v0.40.1
 │   └── m0-2-egui-viewport v0.0.0
@@ -133,7 +135,23 @@ no dock splitter automation. **User checklist item below.**
 
 ## User checklist — must be verified by eyes on the running window
 
-Run: `cargo run --release --manifest-path spikes/m0_2_egui_viewport/Cargo.toml`
+Run: `cargo run --release --manifest-path m0_2_egui_viewport/Cargo.toml`
+
+- [x] **Click accuracy at 125% OS display scaling — VERIFIED 2026-08-16,
+      after three fixes (see below).** Clicking the origin marker at 1x zoom
+      reports `world: (-0.050, 0.025)`, with the spike's own probe giving
+      `1px = 0.0500 world`, i.e. **1.12 px from the origin** — inside the
+      accuracy requirement, and consistent with ordinary mouse aim rather
+      than a systematic transform error. No offset that grows with zoom was
+      observed. Reported world positions quantise to 0.025 world units
+      (half a physical pixel).
+
+      This is the fractional-scale case the first machine (100%) could not
+      test: a misplaced `pixels_per_point()` multiply would show here as a
+      1.25x offset. It does not. **The plan's fallback — replacing the
+      egui-hosted viewport with a `SubViewport`-style overlay — is not
+      needed.** Still untested: 150% scaling, and 2x/4x zoom under a
+      fractional scale factor.
 
 - [ ] **Click accuracy at 1x, 2x, 4x zoom, both 100% and 150% OS display
       scaling.** Click the grid origin (yellow marker) at each zoom level.
@@ -155,7 +173,7 @@ Run: `cargo run --release --manifest-path spikes/m0_2_egui_viewport/Cargo.toml`
 - [ ] **Resize stability, debounce ON (default).** Drag the dock splitter
       between the `Left`/`Viewport`/`Right` tabs back and forth rapidly for
       10 seconds with `RUST_LOG=wgpu_core=warn cargo run --release
-      --manifest-path spikes/m0_2_egui_viewport/Cargo.toml`. Expected: no
+      --manifest-path m0_2_egui_viewport/Cargo.toml`. Expected: no
       wgpu validation errors printed, no panic, frame rate stays
       interactive.
 - [ ] **Resize stability, debounce OFF.** Temporarily lower the debounce
@@ -170,3 +188,109 @@ Run: `cargo run --release --manifest-path spikes/m0_2_egui_viewport/Cargo.toml`
 If click accuracy cannot be made reliable across the DPI/zoom matrix, the
 plan's fallback is a plain `SubViewport`-style overlay layout instead of an
 egui-hosted viewport — note that explicitly here if it comes to that.
+
+## Second machine — 125% display scaling, 2026-08-16
+
+Re-run on a laptop whose Windows display scaling is **125%**, which the first
+machine (100%) never exercised. The spike's own startup line confirms the
+non-unity path is live:
+
+```
+[m0-2] window scale_factor=1.250 logical=(1400,900) physical=(1750,1125)
+```
+
+`--auto-close 180` completes with no wgpu validation error and no panic, so
+the render-to-texture viewport survives a fractional scale factor
+structurally. **What this does not establish is click accuracy** — that
+still needs the checklist above, and it is now worth more on this machine
+than on the first one: any misplaced `pixels_per_point()` multiply produces a
+1.25x offset here that is invisible at 100% scaling.
+
+The DPI matrix in the checklist should therefore be read as 100% / **125%** /
+150%, with 125% available natively on this hardware without changing any
+Windows setting.
+
+## Two bugs that made click accuracy untestable
+
+The click-accuracy checklist could not be started: clicking in the viewport
+did nothing at all — no crosshair, no coordinate readout. Two independent
+defects, both in `viewport_ui`.
+
+### 1. The image never sensed clicks
+
+```rust
+let response = ui.add(egui::Image::new(SizedTexture::new(tex_id, image_size)));
+```
+
+`egui::Image` is created with `Sense::hover()` (egui 0.34,
+`src/widgets/image.rs`), so `response.clicked()` is never true. Fixed with
+`.sense(egui::Sense::click())`.
+
+### 2. `!wants_pointer_input()` disabled the interactions it was guarding
+
+```rust
+let wants_pointer = ui.ctx().wants_pointer_input();
+if hovered && !wants_pointer { /* zoom, pan */ }
+if hovered && !wants_pointer && response.clicked() { /* sample world pos */ }
+```
+
+In egui 0.34:
+
+```rust
+egui_wants_pointer_input() =
+    egui_is_using_pointer() || (is_pointer_over_egui() && !any_down())
+```
+
+This viewport **is** an egui widget, so `is_pointer_over_egui()` is true
+whenever the cursor is over it. The guard therefore evaluated:
+
+| Situation | `wants_pointer` | Effect |
+|---|---|---|
+| Hovering to scroll-zoom (no button down) | true | zoom dead |
+| Click (reported on release, no button down) | true | click dead |
+| Middle-drag pan (button held) | false | pan works |
+
+So the one interaction that appeared to work was the one the guard happened
+to let through, which is why the spike's own `--auto-close` runs — which
+exercise no input at all — reported everything healthy.
+
+`!wants_pointer_input()` is the correct guard for an app whose 3D world is
+drawn *outside* egui and which must not steal input from egui panels. When
+the world is rendered *into* an egui widget, `response.hovered()` /
+`response.clicked()` are the right gates: they already account for occlusion
+by other widgets and windows. Fixed by dropping the guard.
+
+**For M1:** this is the specific trap to avoid when hosting the viewport in
+egui. It is invisible to headless testing, and it degrades to "some input
+works, some doesn't" rather than an obvious failure.
+
+### 3. The crosshair the module header promised did not exist
+
+The header comment states "a crosshair marker is drawn at the last click's
+unprojected world position". `draw_world_grid` drew the grid and the origin
+circle; `last_click_world` fed two text readouts and nothing else.
+
+Without it, the only way to judge accuracy was to click exactly on the origin
+marker and read a number — hard to do with a mouse, and it tests exactly one
+point in the viewport. The first human attempt reported precisely this: "the
+origin looks correct, it's just very hard to hit zero with the mouse."
+
+Added `draw_click_crosshair`, sized in world units from a probed
+world-per-pixel so it stays ~12 px per arm at any zoom. Accuracy is now
+checked by clicking *anywhere* and comparing the mark against the cursor.
+
+The readout also reports `1px = <N> world` and the click's distance from the
+origin **in pixels**, because pixels are the unit the accuracy requirement is
+written in. The world-per-pixel figure is probed by unprojecting two points
+100 px apart rather than derived from `OrthographicProjection::scale`, whose
+meaning depends on the active `ScalingMode` (here `WindowSize`).
+
+## Why three defects survived to this point
+
+None of them are visible to the spike's own `--auto-close` runs, which
+exercise no input: the app starts, renders, resizes and exits cleanly in
+every case. All three only appear when a human clicks — and the first two
+made clicking do nothing at all, so the check they were blocking could not
+even begin. The lesson for M1 is that an input path needs an automated test
+that actually synthesises input, or it is untested no matter how many
+headless frames pass.

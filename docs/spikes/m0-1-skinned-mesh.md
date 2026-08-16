@@ -1,9 +1,11 @@
 # M0-1 — Procedural skinned mesh in Bevy 0.19.1
 
-Spike crate: `spikes/m0_1_skinned_mesh`. Run with:
+Spike crate: `spikes/m0_1_skinned_mesh`. Run from the `spikes/` directory (Cargo
+discovers the shared-target-dir config by walking up from the working
+directory, not from `--manifest-path`):
 
 ```
-cargo run --release --manifest-path spikes/m0_1_skinned_mesh/Cargo.toml -- [flags]
+cargo run --release --manifest-path m0_1_skinned_mesh/Cargo.toml -- [flags]
 ```
 
 Flags: `--auto-close <frames>`, `--stress` (50 puppets), `--joints <N>` (default 40),
@@ -130,7 +132,7 @@ to test on.**
 ## Bevy's exact `glam` version
 
 ```
-$ cargo tree --manifest-path spikes/m0_1_skinned_mesh/Cargo.toml -i glam
+$ cargo tree --manifest-path m0_1_skinned_mesh/Cargo.toml -i glam
 glam v0.32.1
 ├── bevy_math v0.19.1
 │   └── ... (all of bevy_internal/bevy)
@@ -182,9 +184,15 @@ still passes (12 passed, 0 failed).
 
 ## User checklist — must be verified by eyes on the running window
 
-Run: `cargo run --release --manifest-path spikes/m0_1_skinned_mesh/Cargo.toml`
+Run: `cargo run --release --manifest-path m0_1_skinned_mesh/Cargo.toml`
 (no flags — this opens the window and leaves it running; press Alt+F4 or
 close the window when done).
+
+- [x] **TOP orientation — VERIFIED 2026-08-16 (RTX 3070 Laptop, 125% scaling).**
+      Confirmed by eye: "TOP" appears near the **top edge**, right-side up,
+      not mirrored, red strip above it and green strip below — exactly the
+      expected layout. The position/UV convention in `build_grid_mesh` is
+      correct as written; **M1 needs no Y-flip** on this path.
 
 - [ ] **TOP orientation.** The word "TOP" (white blocky letters) must appear
       near the **top edge** of the quad, right-side up, not mirrored, with
@@ -192,9 +200,22 @@ close the window when done).
       bottom, or upside-down, or mirrored left-right, the position/UV
       convention is backwards — note exactly what you see (which edge, which
       orientation).
+- [x] **Wave animation — VERIFIED 2026-08-16.** The grid visibly ripples;
+      the red and green edge strips deform with it and the "TOP" glyphs
+      shear along with the surface, confirming the joint transforms are
+      actually driving the vertices rather than the whole quad moving
+      rigidly.
+
 - [ ] **Wave animation.** The grid should visibly ripple/wave as the camera
       slowly auto-orbits (no input needed — the spike orbits the camera on
       its own).
+- [x] **Culling fix, step 5 of Task 2 — ANSWERED 2026-08-16, and it was
+      never an eyes-only question.** See "The culling test was measuring
+      nothing" below. Measured, not judged by eye: without the fix the mesh
+      is frustum-culled in **28.3% of frames** (254/899); with it, 0.1%
+      (1/899). The fix is load-bearing. The item below is kept for the
+      record of how it was originally framed.
+
 - [ ] **Culling fix, step 5 of Task 2.** Run once normally (bounds fix on)
       and once with `-- --no-bounds-fix`. In both cases, watch the mesh as
       the camera auto-orbits around it for at least one full 360-degree
@@ -204,8 +225,227 @@ close the window when done).
       "did the mesh disappear" without eyes on the frame buffer.
   - [ ] With bounds fix (default): mesh stays visible through the full orbit — yes/no?
   - [ ] With `--no-bounds-fix`: mesh disappears at some orbit angle — yes/no? If yes, roughly which angle/distance?
+- [x] **50-puppet stress visual sanity — VERIFIED 2026-08-16, after two
+      fixes.** All 50 puppets confirmed present in a 10x5 grid, each with a
+      visibly different wave shape. Reaching that state required framing the
+      grid (previously ~90% culled) and giving each puppet its own speed
+      (phase offsets alone were provably distinct but read as one rhythm).
+      Culling instrumentation independently confirms all 50 are drawn:
+      50 of 15000 puppet-frames culled (0.3%).
+
 - [ ] **50-puppet stress visual sanity.** Run with `-- --stress` and confirm
       all 50 puppets are visible, laid out in a grid, and all animate
       independently (not in lockstep) — the measured frame-time numbers
       above assume the scene is actually rendering 50 distinct puppets, not
       silently culling most of them.
+
+## Second machine — RTX 3070 Laptop, 2026-08-16
+
+Re-run on an ASUS-class laptop (Ryzen 7 5800H, RTX 3070 Laptop GPU, 2560x1600
+@165Hz, 125% display scaling) to check how much of the above was an artifact
+of one high-end GPU.
+
+| Scene | RTX 4080 SUPER (ms) | RTX 3070 Laptop, median of 3 (ms) | Laptop spread |
+|---|---|---|---|
+| 1 puppet, 40 joints, animated | 2.55 | 2.58 | 2.52 - 2.62 |
+| 50 puppets x 40 joints, animated | 2.51 | 2.72 | 2.68 - 3.04 |
+| 50 puppets x 40 joints, `--no-animate` | 2.48 | 2.61 | 2.57 - 2.63 |
+
+The laptop column was re-measured after two defects in the measurement
+itself were fixed (see "The 50 puppets were mostly off-screen" and "The 50
+puppets were animating in lockstep" below); the RTX 4080 SUPER column is the
+original run and carries both defects, so **the two columns are not directly
+comparable** and the first column should be re-taken on that machine before
+it is quoted.
+
+Three corrections to how the first machine's numbers were read.
+
+**Single runs were being trusted too far.** A first laptop pass reported
+3.42 / 2.97 / 3.14 ms — enough to invert the row order. Repeating each
+configuration three times shows a spread of up to 0.3 ms, comfortably larger
+than the differences being compared. Medians are stable; single
+`--auto-close` runs are not, and the first machine's figures came from single
+runs.
+
+**The original ordering was an artifact.** The first write-up noted, and
+excused, 50 puppets measuring *faster* than one. With repeated runs and a
+camera that actually frames them, the order comes out right.
+
+**What the numbers now say.** Drawing 50 skinned puppets instead of one costs
+about 0.03 ms (2.61 vs 2.58, render-only). The joint-driving system across
+2000 joint entities costs about 0.11 ms (2.72 vs 2.61). Total for 50 puppets:
+~0.14 ms on a 16.6 ms frame budget. The original conclusion — 50 puppets is
+nowhere near a bottleneck — survives, but it was previously reached from a
+scene that was not drawing them. **Still untested: integrated graphics.**
+
+### Joint ceiling, second data point
+
+`--joints 256`, `257`, and (new here) `512`, all with
+`RUST_LOG=wgpu_core=warn,bevy_render=warn,bevy_pbr=warn,bevy_animation=warn`:
+no panic, no wgpu validation error, no warning at any of the three counts.
+
+```
+[m0-1] built mesh: 900 vertices, 1682 triangles, 256 joints
+[m0-1] FRAME_TIME_MS: avg=4.4358 smoothed=3.3536
+[m0-1] built mesh: 900 vertices, 1682 triangles, 257 joints
+[m0-1] FRAME_TIME_MS: avg=4.9897 smoothed=3.4386
+[m0-1] built mesh: 900 vertices, 1682 triangles, 512 joints
+[m0-1] FRAME_TIME_MS: avg=4.7547 smoothed=3.6497
+```
+
+512 joints — double the supposed ceiling — runs clean. This confirms the
+storage-buffer reading of `bevy_pbr/src/render/skin.rs` on a second, weaker
+discrete GPU, and strengthens the conclusion for M1: **do not hard-code a
+256-joint client-side cap.**
+
+## Bug found while re-running: the TOP texture was silently missing
+
+Running the built executable **directly** (`target/release/m0-1-skinned-mesh.exe`,
+rather than through `cargo run`) produced:
+
+```
+ERROR bevy_asset::server: Path not found: ...\target\release\assets\top_marker.png
+```
+
+Bevy resolves its asset root from `CARGO_MANIFEST_DIR` when Cargo launches
+the binary, and falls back to the executable's own directory otherwise.
+`build.rs` wrote `top_marker.png` only into the crate's `assets/`, so a
+directly-launched build rendered an **untextured** quad — with no crash and
+no visible complaint in the window. The one check this spike exists to
+support (is "TOP" at the top, right-side up?) would have been performed on a
+blank surface, and would have looked like a plausible failure of the UV
+convention rather than a missing file.
+
+Fixed in `build.rs`: the generated PNG is now also copied next to the built
+executable (via `OUT_DIR`'s profile directory), so both launch modes work.
+
+## The culling test was measuring nothing
+
+The `--no-bounds-fix` check as originally written **could not fail**, for two
+independent reasons, and a human dutifully watching it reported "both stay
+visible" — correctly.
+
+1. **The camera never let the mesh near a frustum edge.** `orbit_camera`
+   orbits at a fixed radius of 14 with `looking_at` locked to the mesh
+   centre, so the mesh sits permanently in the middle of the view. Frustum
+   culling only discards what falls *outside* the frustum; a centred object
+   is never discarded no matter how wrong its bounding box is.
+2. **The deformation was too small to matter anyway.** The mesh spans 4x4
+   world units and the wave amplitude was 0.3 — the deformed surface exceeds
+   its rest-pose AABB by ~7%.
+
+Two flags now make the test able to answer its own question:
+`--edge-sweep` (pitch the camera so the mesh crosses the top/bottom frustum
+boundary) and `--amplitude <N>` (default 0.3, unchanged).
+
+**The sweep axis is load-bearing and the obvious choice is the wrong one.**
+The first attempt yawed the camera horizontally, and still produced a null
+result: `joint_animation` displaces vertices along **Y only**, so the stale
+AABB and the true deformed bounds have *identical* X extents and cull at
+exactly the same moment. Only a vertical sweep puts the stale edge of the box
+against the frustum plane.
+
+## Culling, measured instead of eyeballed
+
+The write-up above claimed the spike "cannot detect whether the mesh
+disappeared without eyes on the frame buffer". That was wrong.
+`ViewVisibility` holds the culling decision for each entity, so a system
+counting frames where `ViewVisibility::get()` is false answers the question
+numerically. `--auto-close 900`, one puppet, `--amplitude 2.0`:
+
+| Camera | Bounds fix | Mesh-frames culled |
+|---|---|---|
+| `--edge-sweep` | on | 1 / 899 (0.1%) |
+| `--edge-sweep` | **off** | **254 / 899 (28.3%)** |
+| plain orbit | on | 1 / 899 (0.1%) |
+| plain orbit | off | 1 / 899 (0.1%) |
+
+**`with_generated_skinned_mesh_bounds()` + `DynamicSkinnedMeshBounds` are
+required.** Without them the mesh is wrongly discarded in over a quarter of
+frames once it approaches a frustum edge. M1 must apply the fix to every
+skinned puppet, and the bottom two rows show why this must never be
+re-verified with a camera that keeps the subject centred.
+
+One caveat stated honestly: Bevy's own docs note the generated AABB "may be
+larger than is optimal", so a small part of the 28.3% gap could be the fixed
+path being conservative rather than the unfixed path being wrong. The
+magnitude of the gap, and the fact that it appears only when the mesh nears
+an edge, leave no doubt about the direction of the effect.
+
+### Reproduce
+
+```
+cd spikes
+cargo run --release --manifest-path m0_1_skinned_mesh/Cargo.toml -- \
+  --auto-close 900 --edge-sweep --amplitude 2.0 [--no-bounds-fix]
+```
+
+## The 50 puppets were animating in lockstep
+
+`spawn_puppet` took a `phase` argument, the caller passed a distinct value
+per puppet (`n as f32 * 0.3`), and the function body ended with:
+
+```rust
+// Store phase on the root's children via joint index already; phase
+// offsets the sine wave per-puppet so 50 puppets don't animate in lockstep.
+let _ = phase;
+```
+
+The comment describes the intent; the code discards the value. `AnimatedJoint`
+carried only `index` and `rest_x`, so every puppet evaluated the identical
+sine and all 50 moved as one. The checklist item asking a human to confirm
+"all animate independently (not in lockstep)" was therefore **guaranteed to
+fail** before anyone looked at it.
+
+Fixed: `AnimatedJoint` now carries `phase` and `joint_animation` adds it to
+the sine argument. Instrumentation confirms the values arrive:
+
+```
+[m0-1] PHASE: distinct phase values=50 range=Some(0.0)..Some(14.700001)
+```
+
+**Phase alone still did not satisfy the checklist item, for a reason worth
+recording.** With 50 distinct phases the puppets are provably not identical,
+yet a human looking at the grid still reported "they all move in one
+rhythm" — and that reading is correct. Adding a phase offset slides the
+*same* waveform sideways along the puppet, so every puppet shows an
+identically-shaped ripple pulsing at an identical frequency, merely offset.
+Independence has to be visible in the *rate*, not only the offset, so
+`AnimatedJoint` also carries a per-puppet `speed` (1.6..2.4, derived
+deterministically from the phase seed). The puppets now drift apart
+continuously instead of holding a fixed relative offset.
+
+The single-puppet case is seeded to land on exactly 2.0, the rate all earlier
+single-puppet runs and screenshots were taken at.
+
+This does not invalidate the frame-time numbers — `joint_animation` runs over
+the same 2000 joint entities either way, and the GPU still draws 50 separate
+skinned meshes — but it does mean the earlier stress runs were rendering 50
+copies of a single pose, which is not what "50 puppets" was meant to be
+testing.
+
+## The 50 puppets were mostly off-screen
+
+`--stress` lays 50 puppets out in a 10x5 grid at 5.5 units spacing — roughly
+50 x 22 world units — while `orbit_camera` orbited at the single-puppet
+radius of 14. The instrumentation added for the culling question answered
+this one as a side effect:
+
+```
+[m0-1] CULLING: ... mesh-frames observed=6000 culled=5405 (90.1%)
+```
+
+**Nine of every ten puppet-frames were being frustum-culled.** The stress
+test was measuring the cost of drawing about five puppets, not fifty, on
+both machines. This is exactly the failure the checklist item warned about
+("the measured frame-time numbers assume the scene is actually rendering 50
+distinct puppets, not silently culling most of them") — and it was rendered
+undetectable by eye, because the camera orbits and *some* puppets are always
+on screen.
+
+Fixed: in `--stress`, `orbit_camera` now orbits at radius 70 around the grid
+centre, framing all 50. Culling drops to 50 of 15000 puppet-frames (0.3%,
+the first frame before bounds are computed), and the frame-time rows above
+were re-measured with every puppet genuinely drawn.
+
+The conclusion did not change. The measurement now supports it.

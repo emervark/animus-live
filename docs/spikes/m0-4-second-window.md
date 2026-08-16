@@ -1,9 +1,11 @@
 # M0-4 — Second window, RenderLayers isolation, vsync
 
-Spike crate: `spikes/m0_4_second_window`. Run with:
+Spike crate: `spikes/m0_4_second_window`. Run from the `spikes/` directory (Cargo
+discovers the shared-target-dir config by walking up from the working
+directory, not from `--manifest-path`):
 
 ```
-cargo run --release --manifest-path spikes/m0_4_second_window/Cargo.toml -- \
+cargo run --release --manifest-path m0_4_second_window/Cargo.toml -- \
   [--editor-vsync on|off] [--output-vsync on|off] [--auto-close <frames>]
 ```
 
@@ -170,3 +172,34 @@ not measured here -- **user checklist item**.
       min/max continuously; read it via `--auto-close <frames>` at the
       10-minute frame count, or watch for logged drift if extended to log
       periodically). Watch for drift.
+
+## Second machine — RTX 3070 Laptop, 165Hz, 2026-08-16
+
+Still a single-monitor machine, so the checklist above (real second display,
+projector, `BorderlessFullscreen`) remains **open**. What this run adds is a
+second confirmation of the vsync-coupling finding on different hardware and a
+different refresh rate (165Hz vs 144Hz):
+
+| Editor `PresentMode` | Output `PresentMode` | Editor avg dt | Output avg dt | ~fps |
+|---|---|---|---|---|
+| Vsync | Vsync | 7.676 ms | 7.676 ms | 130.3 |
+| AutoNoVsync | Vsync | 7.478 ms | 7.478 ms | 133.7 |
+| AutoNoVsync | AutoNoVsync | 4.642 ms | 4.642 ms | 215.4 |
+
+The editor and output columns are **identical to three decimal places in
+every row** — the same total coupling seen on the first machine. Setting only
+the editor to `AutoNoVsync` again buys nothing (7.68 -> 7.48 ms is noise);
+only turning vsync off in *both* windows changes the rate (215 fps).
+
+Note that even the vsync-on rows run at ~130fps on a 165Hz panel rather than
+locking to 165 — the windows are coupled to each other, not cleanly locked to
+the display. This does not change the conclusion for M1 (render the editor
+view every other frame), but it does mean "vsync on" should not be read as
+"presenting exactly at refresh".
+
+The single-monitor fallback path fired again and logged it:
+
+```
+[m0-4]   monitor 369v0: name="\.\DISPLAY1" pos=(0, 0) size=2560x1600px refresh=165.0Hz scale=1.25
+[m0-4] monitors detected: 1. only one monitor present: opening windowed-borderless
+```

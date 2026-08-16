@@ -1,9 +1,11 @@
 # M0-3 — Spout, both paths
 
-Spike crate: `spikes/m0_3_spout`. Run with:
+Spike crate: `spikes/m0_3_spout`. Run from the `spikes/` directory (Cargo
+discovers the shared-target-dir config by walking up from the working
+directory, not from `--manifest-path`):
 
 ```
-cargo run --release --manifest-path spikes/m0_3_spout/Cargo.toml -- [--path-a] [--auto-close <frames>] [--width <px> --height <px>]
+cargo run --release --manifest-path m0_3_spout/Cargo.toml -- [--path-a] [--auto-close <frames>] [--width <px> --height <px>]
 ```
 
 **OBS was not installed by this work** (per the task's instruction: "Do not
@@ -185,11 +187,22 @@ integrated-GPU/older-hardware machine was available).
 
 ## User checklist — the receiving half (needs OBS + Spout2 plugin installed by the user)
 
+- [x] **DONE 2026-08-16.** OBS Studio 32.2.1 + Spout2 plugin 1.12.0; a
+      `Spout2 Capture` source connects to `AnimusLive-M0-3` and shows the
+      incrementing counter cleanly.
 - [ ] Install OBS Studio + the Spout2 plugin
       (https://github.com/Off-World-Live/obs-spout2-plugin), add a Spout2
       Capture source, and confirm it connects to `"AnimusLive-M0-3"`.
+- [x] **Visual sanity — VERIFIED 2026-08-16.** OBS shows the dark
+      background and the large white frame-counter digits incrementing, with
+      no tearing or garbling.
 - [ ] **Visual sanity**: OBS should show the dark background and the large
       white frame-counter digits incrementing.
+- [x] **End-to-end latency — MEASURED 2026-08-16: 1 counter step (~7.5 ms),
+      under one OBS frame.** See "End-to-end latency" below. Spec §12.2's
+      1-3 frames / 16-50 ms is an overestimate. Done with a desktop
+      screenshot rather than a phone camera, since a screenshot captures
+      both numbers at one instant.
 - [ ] **End-to-end latency (Task 4 Step 6)**: point a phone camera at both
       the Bevy window and the OBS preview in one shot, record video, step
       through frame by frame, and read the difference between the two
@@ -197,9 +210,138 @@ integrated-GPU/older-hardware machine was available).
       ms at the display's refresh rate. Spec §12.2 claims 1-3 frames
       (16-50ms) -- confirm or correct it with this measurement; do not
       estimate.
+- [x] **4K visual check — VERIFIED 2026-08-16.** Clean image in OBS at
+      3840x2160 (OBS canvas raised to 4K as well), counter advancing
+      smoothly, no tearing or dropped-frame artifacts. But see "4K: clean
+      image, but the readback timer understates the real cost" below: the
+      application itself drops to 61 fps at 4K, which is the finding that
+      actually matters.
 - [ ] **4K visual check**: re-run with `-- --width 3840 --height 2160` and
       confirm OBS still receives a clean (non-garbled, non-dropped-frame)
       image at that resolution.
 - [ ] If you have access to a machine with an integrated or older
       discrete GPU, re-run the `--auto-close` measurements above on it and
       compare -- this spike's numbers are from one high-end GPU only.
+
+## Second machine — RTX 3070 Laptop, 2026-08-16
+
+This closes the last checklist item above ("re-run on a weaker GPU and
+compare"). Same binary, same DX12 backend, 300 frames each:
+
+```
+[m0-3] adapter backend=Dx12 name="NVIDIA GeForce RTX 3070 Laptop GPU" device_type=DiscreteGpu
+[m0-3] readback+send: samples=297 avg_us=1177.3   # 1920x1080
+[m0-3] readback+send: samples=297 avg_us=4045.8   # 3840x2160
+```
+
+| Resolution | RTX 4080 SUPER | RTX 3070 Laptop | Frame budget @60fps |
+|---|---|---|---|
+| 1920x1080 | 1.12 ms | 1.18 ms | 16.6 ms |
+| 3840x2160 (4K) | 3.37 ms | 4.05 ms | 16.6 ms |
+
+1080p is essentially free on both (a 5% difference — this path is not
+GPU-bound, it is bound by the PCIe copy and the memcpy into Spout). 4K costs
+20% more on the laptop and still consumes under a quarter of a 60fps frame.
+
+**The spec's §12.2 prediction is now falsified on two machines, not one:**
+"~12 ms, not viable at 4K" was wrong by 3-4x, and the readback path is
+viable at 4K even on laptop-class hardware.
+
+Path A (`--path-a`) fails here exactly as it does on the first machine —
+`spout2-rs` opens its own private D3D12 device — so the diagnosis is a
+property of the library, not of the GPU.
+
+Minor, benign: on `--auto-close` teardown Bevy logs
+`WARN bevy_render::gpu_readback: Failed to send readback result: sending into
+a closed channel`. That is the readback channel closing before the last
+in-flight frame lands during shutdown; it has no effect on a normal run.
+
+## The frame counter was invisible on screen
+
+`setup` spawns a `Camera3d` (which renders the **window**, and sees an empty
+scene) and a `Camera2d` with `RenderTarget::Image` (which renders the
+**Spout texture**). The large `Text2d` frame counter is a 2D entity, so only
+the image camera ever saw it.
+
+The counter therefore existed only inside the Spout stream. Its own comment
+reads "the user films this against the OBS preview to measure end-to-end
+latency (Task 4 Step 6)" — but the window showed nothing to film. The first
+person to try it reported exactly that: OBS shows numbers, the Bevy window
+does not.
+
+Fixed by adding a second `Camera2d` targeting the window (`order: 2`,
+`ClearColorConfig::None`, compositing over the empty 3D view). It shows the
+same `Text2d` entity in the same frame, so the two numbers differ only by
+the Spout + OBS pipeline delay.
+
+## End-to-end latency — measured 2026-08-16
+
+With the sender running and an OBS `Spout2 Capture` source bound to
+`AnimusLive-M0-3`, a single desktop screenshot captures both numbers at one
+instant, which removes the phone-camera step the checklist assumed:
+
+| Source | Counter |
+|---|---|
+| Bevy window | 4842 |
+| OBS preview (Spout2 Capture) | 4841 |
+
+**Delta: exactly 1 counter step.** The counter increments once per Bevy
+frame, and this build's frame rate was measured by timing `--auto-close`
+runs (660 frames minus 60 frames = 600 frames in 4514 ms) at **7.52
+ms/frame, ~133 fps**. So the observed delta corresponds to **~7.5 ms**.
+
+**Against spec §12.2's claim of 1-3 frames (16-50 ms):** the delay is
+smaller than claimed. State it carefully, though — OBS renders its preview
+at 60 fps, so a desktop screenshot cannot resolve better than one 16.7 ms
+OBS frame. What this measurement establishes firmly is **under one OBS frame
+(<17 ms) end to end**, with the counter difference itself pointing at ~7.5
+ms. That is comfortably inside a live-performance budget either way.
+
+Caveats: one sample, one machine, windowed OBS preview (not a full-screen
+projector output), and the numbers were compared through the desktop
+compositor, which introduces its own frame of uncertainty.
+
+## 4K: clean image, but the readback timer understates the real cost
+
+Visual check, 3840x2160, OBS canvas also set to 4K: **image is clean** — no
+tearing, no garbling, counter advancing smoothly.
+
+Latency at 4K, same single-screenshot method:
+
+| Source | Counter |
+|---|---|
+| Bevy window | 5798 |
+| OBS preview | 5796 |
+
+**Delta: 2 counter steps** (vs 1 at 1080p).
+
+The important part is what one step is worth at each resolution. Wall-clock
+frame time, measured by timing `--auto-close` runs (660 frames minus 60
+frames = 600 frames):
+
+| Resolution | Frame time | Frame rate | `readback+send` observer | Latency delta |
+|---|---|---|---|---|
+| 1920x1080 | 7.52 ms | 133 fps | 1.18 ms | 1 frame (~7.5 ms) |
+| 3840x2160 | 16.30 ms | **61 fps** | 4.05 ms | 2 frames (~33 ms) |
+
+**The `readback+send` figure is not the cost of the Spout path.** Going from
+1080p to 4K costs 8.8 ms of frame time, and the observer accounts for only
+2.9 ms of it. The rest sits elsewhere — the 4K render target, and the GPU
+synchronisation the readback forces — where this spike's instrumentation
+does not look.
+
+**This changes the conclusion recorded earlier in this document.** "3.37 ms
+of a 16.6 ms budget, comfortably viable at 4K" was measured with the wrong
+instrument. The honest statement is: **at 4K the whole application runs at 61
+fps**, i.e. it lands essentially exactly on a 60 fps target with no headroom
+for the actual editor workload that M1 will add on top. Spec §12.2's "not
+viable at 4K" was closer to right than the observer timings suggested, even
+though its stated reasoning (a ~2 GB/s memcpy) does not match what was
+measured.
+
+At 1080p there is no such problem: 133 fps with the full path running.
+
+**For M1:** treat 1080p as the supported Spout output resolution, and measure
+4K again as a whole-frame cost — not as an in-observer duration — before
+promising it. And measure the same way on the RTX 4080 SUPER, whose numbers
+in this document are in-observer figures and therefore carry the same flaw.
