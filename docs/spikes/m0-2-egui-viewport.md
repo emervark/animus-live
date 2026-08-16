@@ -165,11 +165,21 @@ Run: `cargo run --release --manifest-path m0_2_egui_viewport/Cargo.toml`
   - [ ] 150% DPI, 1x zoom
   - [ ] 150% DPI, 2x zoom
   - [ ] 150% DPI, 4x zoom
+- [x] **Zoom-to-cursor — VERIFIED 2026-08-16.** Works; scroll-zoom was dead
+      before the pointer-gate fix, so this could not have been checked
+      earlier.
 - [ ] **Zoom-to-cursor feel.** Scroll while hovering a spot away from the
       origin; that world point should stay under the cursor as you zoom
       (no drift/lag). Note whether it feels correct.
+- [x] **Pan — VERIFIED 2026-08-16, after two fixes.** See "Middle-drag pan
+      was broken twice over" below: wrong scale by ~28x, and the drag never
+      registered. The grid now tracks the cursor for the length of the drag.
 - [ ] **Pan.** Middle-drag; the grid should track the cursor 1:1 regardless
       of zoom level.
+- [x] **Resize stability, both configurations — VERIFIED 2026-08-16.** Zero
+      wgpu validation errors and zero warnings in both, over ~10s of rapid
+      splitter dragging each. See "Resize stability: the debounce is not
+      load-bearing here". Recommendation for M1: drop the debounce.
 - [ ] **Resize stability, debounce ON (default).** Drag the dock splitter
       between the `Left`/`Viewport`/`Right` tabs back and forth rapidly for
       10 seconds with `RUST_LOG=wgpu_core=warn cargo run --release
@@ -182,6 +192,10 @@ Run: `cargo run --release --manifest-path m0_2_egui_viewport/Cargo.toml`
       rapid-drag test. Record whether validation errors or stutter appear
       that did not appear with the debounce on — this is what establishes
       the debounce was actually load-bearing, not just present.
+- [x] **General feel of `egui_dock` — VERIFIED 2026-08-16.** Tabs can be
+      torn out, rearranged and re-docked; the user's summary was that it
+      "works like a program where I can change the layout". No friction
+      worth recording against it.
 - [ ] **General feel of `egui_dock`.** Any friction working with it worth
       recording for the M1 implementer (tab behavior, styling, etc.).
 
@@ -294,3 +308,67 @@ made clicking do nothing at all, so the check they were blocking could not
 even begin. The lesson for M1 is that an input path needs an automated test
 that actually synthesises input, or it is untested no matter how many
 headless frames pass.
+
+## Middle-drag pan was broken twice over
+
+Two separate defects, found after the input gate above was fixed.
+
+**Wrong scale by ~28x.** The pan converted pointer movement to world units
+with `ortho.scale / image_rect.height() * ppp`, which assumes `scale` is the
+world height of the viewport. Under `ScalingMode::WindowSize` it is not. That
+expression yields ~0.0018 world units per pixel where the camera's actual
+figure — probed by unprojecting two points 100px apart — is 0.0500. A
+100-pixel drag moved the camera a fifth of a grid cell, so panning looked
+like it did nothing. Now uses the same probed `world_per_px` the click
+readout uses, so the two can never disagree again.
+
+**Drag never registered.** The pan was gated on a raw
+`ui.input(|i| i.pointer.middle_down())` inside `if hovered`. egui only
+reports a drag on a widget that senses drags, and the image sensed clicks
+only, so after the press settled, `hovered()` went false and panning stopped
+after a frame or two — about 10px of movement, which is exactly what the
+first attempt at this check reported. Fixed with
+`Sense::click_and_drag()` + `response.dragged_by(PointerButton::Middle)` +
+`response.drag_delta()`, the same route egui's own `Scene` container uses.
+
+Verified by hand 2026-08-16: the grid now tracks the cursor for as long as
+the drag continues.
+
+## The viewport scene had nothing moving in it
+
+Two checklist items — "no stutter under rapid resize" and "frame rate stays
+interactive" — were unjudgeable, because the scene was a static grid and a
+still image cannot show a dropped frame. Added `draw_motion_reference`: a
+marker orbiting the origin at constant angular speed plus a second marker in
+pure translation. Any frame-time hitch now reads as visible jerk.
+
+## Resize stability: the debounce is not load-bearing here
+
+Both configurations were exercised by hand, dragging a dock splitter rapidly
+for ~10 seconds each, with `RUST_LOG=wgpu_core=warn,wgpu_hal=warn,bevy_render=warn`
+captured to a file.
+
+| Configuration | wgpu validation errors | Warnings | Visual |
+|---|---|---|---|
+| Debounce on (default) | 0 | 0 | grid visibly **stretches** while dragging |
+| `--no-resize-debounce` | 0 | 0 | grid tracks the panel exactly |
+
+The stretch under the debounce is the debounce working as designed: while the
+size is unsettled the render target is *not* rebuilt, so the previous texture
+is displayed scaled into the new rectangle. The human observation was
+"it stretches a bit, both horizontally and vertically, as if the grid can't
+react fast enough" — an accurate description of the mechanism.
+
+**Neither configuration produced a single validation error or warning.** The
+debounce costs a visible artifact and, on this machine, buys nothing. The
+human preference was explicit: the undebounced version looks better.
+
+**For M1:** default to resizing the render target immediately, and do not
+carry the debounce over as a precaution. Two caveats before treating that as
+settled: this is one GPU and one driver, and the resize triggers that
+actually matter at a venue — moving the window between monitors with
+different DPI scaling, and entering fullscreen on a projector — could not be
+tested on a single-monitor machine. Re-check those before the first show.
+
+A flag was added so this comparison can be repeated:
+`--no-resize-debounce` drops both the stability wait and the 2px deadzone.
