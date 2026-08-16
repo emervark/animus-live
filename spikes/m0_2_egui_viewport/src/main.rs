@@ -22,8 +22,8 @@ use bevy::render::render_resource::{
 };
 use bevy::window::PrimaryWindow;
 use bevy_egui::{
-    egui, EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, EguiTextureHandle,
-    EguiUserTextures,
+    EguiContexts, EguiGlobalSettings, EguiPlugin, EguiPrimaryContextPass, EguiTextureHandle,
+    EguiUserTextures, egui,
 };
 use egui_dock::{DockArea, DockState, Style, TabViewer};
 
@@ -53,6 +53,12 @@ struct ViewportCamera;
 #[derive(Resource, Default)]
 struct ViewportState {
     last_click_world: Option<Vec2>,
+    /// World units per physical pixel, probed from the live camera rather
+    /// than derived from `OrthographicProjection::scale` (whose meaning
+    /// depends on `ScalingMode`). Lets a click offset be reported in pixels,
+    /// which is the unit the accuracy requirement is written in, and sizes
+    /// the crosshair so it stays the same size on screen at any zoom.
+    world_per_px: f32,
     /// The most recent physical pixel size the viewport image *should* be,
     /// per the debounce rule in Task 3 Step 6. Applied by
     /// `apply_debounced_resize` once stable.
@@ -193,7 +199,7 @@ fn setup(
 /// scene every frame (gizmos are re-issued per frame, and this camera has
 /// its own `RenderLayers`-free view since there's only one camera looking
 /// at the grid).
-fn draw_world_grid(mut gizmos: Gizmos) {
+fn draw_world_grid(gizmos: &mut Gizmos) {
     let half_extent = 10;
     for i in -half_extent..=half_extent {
         let color = if i == 0 {
@@ -225,10 +231,29 @@ fn draw_world_grid(mut gizmos: Gizmos) {
     );
 }
 
+/// Draws a crosshair at the last sampled click position.
+///
+/// The module header claimed this existed from the start; it did not. Without
+/// it the click-accuracy check degenerates into "click exactly on the origin
+/// marker and read a number", which is hard to do with a mouse and only tests
+/// one point. With the crosshair, accuracy is checked by clicking *anywhere*
+/// and comparing the mark against the cursor.
+fn draw_click_crosshair(gizmos: &mut Gizmos, world: Vec2, arm: f32) {
+    let color = Color::srgb(1.0, 0.35, 0.9);
+    let p = Vec3::new(world.x, world.y, 0.0);
+    gizmos.line(p - Vec3::X * arm, p + Vec3::X * arm, color);
+    gizmos.line(p - Vec3::Y * arm, p + Vec3::Y * arm, color);
+}
+
 struct TabViewerImpl<'a> {
     tex_id: egui::TextureId,
     viewport_state: &'a mut ViewportState,
-    camera: (&'a Camera, &'a mut Projection, &'a GlobalTransform, &'a mut Transform),
+    camera: (
+        &'a Camera,
+        &'a mut Projection,
+        &'a GlobalTransform,
+        &'a mut Transform,
+    ),
 }
 
 impl<'a> TabViewer for TabViewerImpl<'a> {
@@ -250,7 +275,10 @@ impl<'a> TabViewer for TabViewerImpl<'a> {
             Tab::Right => {
                 ui.label("Right panel (placeholder tab, per Task 3 Step 3).");
                 if let Some(w) = self.viewport_state.last_click_world {
-                    ui.label(format!("Last click, world coords: ({:.3}, {:.3})", w.x, w.y));
+                    ui.label(format!(
+                        "Last click, world coords: ({:.3}, {:.3})",
+                        w.x, w.y
+                    ));
                 } else {
                     ui.label("No click yet.");
                 }
@@ -264,10 +292,15 @@ impl<'a> TabViewerImpl<'a> {
     fn viewport_ui(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
         let image_size = egui::vec2(available.x.max(16.0), available.y.max(16.0));
-        let response = ui.add(egui::Image::new(egui::load::SizedTexture::new(
-            self.tex_id,
-            image_size,
-        )));
+        // `.sense(Sense::click())` is load-bearing: `egui::Image` defaults to
+        // `Sense::hover()` (egui 0.34 `widgets/image.rs`), so without it
+        // `response.clicked()` is *never* true and the click-accuracy readout
+        // below can never update. Hover-driven behaviour (zoom, middle-drag
+        // pan) works either way, which is what made the omission easy to miss.
+        let response = ui.add(
+            egui::Image::new(egui::load::SizedTexture::new(self.tex_id, image_size))
+                .sense(egui::Sense::click()),
+        );
         let image_rect = response.rect;
 
         // --- Debounced resize (Task 3 Step 6) ---
@@ -304,9 +337,20 @@ impl<'a> TabViewerImpl<'a> {
         // propagate through Bevy's transform/camera update systems first.
         let (camera, projection, global_transform, transform) = &mut self.camera;
         let hovered = response.hovered();
-        let wants_pointer = ui.ctx().wants_pointer_input();
-
-        if hovered && !wants_pointer {
+        // NOTE: the obvious-looking guard `!ui.ctx().wants_pointer_input()`
+        // must NOT be used here. In egui 0.34 that expands to
+        // `egui_is_using_pointer() || (is_pointer_over_egui() && !any_down())`,
+        // and this whole viewport *is* an egui widget, so the pointer is over
+        // an egui area whenever it is over the viewport. The guard is for
+        // apps whose 3D world is drawn outside egui; here it silently
+        // disabled scroll-zoom (pointer hovering, no button down -> wants
+        // pointer) and click sampling (a click is reported on release, when
+        // no button is down -> wants pointer), while leaving middle-drag pan
+        // working, because a held button makes the same expression false.
+        //
+        // `response.hovered()` is the correct gate: it already accounts for
+        // occlusion by other widgets and windows.
+        if hovered {
             let scroll = ui.input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.0 {
                 if let Some(pointer) = response.hover_pos() {
@@ -314,15 +358,20 @@ impl<'a> TabViewerImpl<'a> {
                         (pointer.x - image_rect.min.x) * ppp,
                         (pointer.y - image_rect.min.y) * ppp,
                     );
-                    let before = camera.viewport_to_world_2d(global_transform, pixel_in_image).ok();
+                    let before = camera
+                        .viewport_to_world_2d(global_transform, pixel_in_image)
+                        .ok();
 
                     if let Projection::Orthographic(ortho) = &mut **projection {
-                        ortho.scale = (ortho.scale * (1.0 - scroll * 0.001)).clamp(MIN_SCALE, MAX_SCALE);
+                        ortho.scale =
+                            (ortho.scale * (1.0 - scroll * 0.001)).clamp(MIN_SCALE, MAX_SCALE);
                     }
 
                     if let (Some(before), Some(after)) = (
                         before,
-                        camera.viewport_to_world_2d(global_transform, pixel_in_image).ok(),
+                        camera
+                            .viewport_to_world_2d(global_transform, pixel_in_image)
+                            .ok(),
                     ) {
                         transform.translation += (before - after).extend(0.0);
                     }
@@ -343,7 +392,18 @@ impl<'a> TabViewerImpl<'a> {
         }
 
         // --- Click accuracy (Task 3 Step 5) ---
-        if hovered && !wants_pointer && response.clicked() {
+        // Probe the actual world-units-per-physical-pixel by unprojecting two
+        // points 100px apart. Measured rather than computed, so it stays
+        // correct regardless of what `OrthographicProjection::scale` means
+        // under the current `ScalingMode`.
+        if let (Ok(a), Ok(b)) = (
+            camera.viewport_to_world_2d(global_transform, Vec2::ZERO),
+            camera.viewport_to_world_2d(global_transform, Vec2::new(100.0, 0.0)),
+        ) {
+            self.viewport_state.world_per_px = (b.x - a.x).abs() / 100.0;
+        }
+
+        if response.clicked() {
             if let Some(pointer) = response.interact_pointer_pos() {
                 let pixel_in_image = Vec2::new(
                     (pointer.x - image_rect.min.x) * ppp,
@@ -359,7 +419,18 @@ impl<'a> TabViewerImpl<'a> {
             image_rect.left_top() + egui::vec2(6.0, 4.0),
             egui::Align2::LEFT_TOP,
             match self.viewport_state.last_click_world {
-                Some(w) => format!("world: ({:.3}, {:.3})", w.x, w.y),
+                Some(w) => {
+                    let wpp = self.viewport_state.world_per_px;
+                    let dist_px = if wpp > 0.0 {
+                        w.length() / wpp
+                    } else {
+                        f32::NAN
+                    };
+                    format!(
+                        "world: ({:.3}, {:.3})   1px = {:.4} world   distance from origin: {:.2} px",
+                        w.x, w.y, wpp, dist_px
+                    )
+                }
                 None => "world: (click to sample)".to_string(),
             },
             egui::FontId::monospace(14.0),
@@ -374,17 +445,26 @@ fn ui_system(
     mut dock_state: ResMut<DockStateRes>,
     mut viewport_state: ResMut<ViewportState>,
     viewport_image: Res<ViewportImage>,
-    mut camera_q: Query<(&Camera, &mut Projection, &GlobalTransform, &mut Transform), With<ViewportCamera>>,
+    mut camera_q: Query<
+        (&Camera, &mut Projection, &GlobalTransform, &mut Transform),
+        With<ViewportCamera>,
+    >,
     mut gizmos: Gizmos,
 ) -> Result {
-    draw_world_grid(gizmos);
+    draw_world_grid(&mut gizmos);
+    if let Some(world) = viewport_state.last_click_world {
+        // ~12 physical pixels per arm, so the mark reads the same at any zoom.
+        let arm = (viewport_state.world_per_px * 12.0).max(f32::EPSILON);
+        draw_click_crosshair(&mut gizmos, world, arm);
+    }
 
     let tex_id = contexts
         .image_id(&viewport_image.0)
         .expect("viewport image must be registered with EguiUserTextures in setup()");
     let ctx = contexts.ctx_mut()?;
 
-    let Ok((camera, mut projection, global_transform, mut transform)) = camera_q.single_mut() else {
+    let Ok((camera, mut projection, global_transform, mut transform)) = camera_q.single_mut()
+    else {
         return Ok(());
     };
 
@@ -409,7 +489,11 @@ fn ui_system(
 /// `ResMut<Assets<Image>>`, and because the debounce rule ("stable for 2
 /// frames") is inherently a resize-on-a-later-frame operation, not
 /// same-frame.
-fn apply_debounced_resize(mut images: ResMut<Assets<Image>>, viewport_image: Res<ViewportImage>, mut state: ResMut<ViewportState>) {
+fn apply_debounced_resize(
+    mut images: ResMut<Assets<Image>>,
+    viewport_image: Res<ViewportImage>,
+    mut state: ResMut<ViewportState>,
+) {
     let Some(pending) = state.pending_resize else {
         return;
     };
