@@ -1,0 +1,50 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p animus-core -p animus-project --all-targets -- -D warnings
+
+  core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p animus-core -p animus-project
+
+  no-bevy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: animus-core must not depend on bevy
+        run: |
+          if cargo tree -p animus-core | grep -qi bevy; then
+            echo "::error::animus-core has acquired a Bevy dependency. See spec section 3.1."
+            exit 1
+          fi
+      - name: animus-project must not depend on bevy
+        run: |
+          if cargo tree -p animus-project | grep -qi bevy; then
+            echo "::error::animus-project has acquired a Bevy dependency. See spec section 3.1."
+            exit 1
+          fi
+
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2

@@ -1,0 +1,22 @@
+[package]
+name = "animus-core"
+description = "Document model, geometry and physics solver for Animus Live. No engine dependency."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+indexmap.workspace = true
+thiserror.workspace = true
+spade.workspace = true
+i_overlay.workspace = true
+imageproc.workspace = true
+image.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+approx.workspace = true

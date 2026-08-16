@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+exclude = ["spikes"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/emervark/animus-live"
+rust-version = "1.85"
+
+[workspace.dependencies]
+# --- Bevy-free core ---
+# glam 0.32 is what Bevy 0.19.1 resolves (glam v0.32.1). Keep these two in
+# lockstep: bumping Bevy's version requires re-checking this pin, and vice
+# versa, or animus-core will link a second copy of glam.
+glam        = { version = "0.32", features = ["serde"] }
+serde       = { version = "1", features = ["derive"] }
+serde_json  = { version = "1", features = ["preserve_order"] }
+indexmap    = { version = "2", features = ["serde"] }
+thiserror   = "2"
+tracing     = "0.1"
+
+# --- geometry ---
+spade       = "2.15"
+i_overlay   = "8.1"
+imageproc   = "0.27"
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# --- project io ---
+sha2        = "0.10"
+zip         = "5"
+tempfile    = "3"
+
+# --- testing ---
+proptest    = "1"
+insta       = { version = "1", features = ["json"] }
+approx      = "0.5"
+
+# --- internal ---
+animus-core    = { path = "crates/animus-core" }
+animus-project = { path = "crates/animus-project" }
+
+[profile.dev]
+opt-level = 1
+debug = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+panic = "unwind"       # load-bearing: per-subsystem catch_unwind depends on it
+
+[profile.dist]
+inherits = "release"
+strip = "none"
+debug = 1
