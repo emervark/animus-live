@@ -1,5 +1,5 @@
 use animus_core::doc::*;
-use animus_core::ids::LayerId;
+use animus_core::ids::{AssetId, LayerId};
 use animus_project::{AssetStore, ProjectError, load, save, to_json};
 use std::fs;
 use tempfile::tempdir;
@@ -94,8 +94,11 @@ fn assets_are_stored_by_content_hash() {
     let src = dir.path().join("pic.png");
     fs::write(&src, b"not really a png, but bytes are bytes").unwrap();
 
+    let mut project = sample();
     let mut store = AssetStore::new(&root);
-    let a = store.import(&src, AssetKind::Image).unwrap();
+    let a = store
+        .import(&src, AssetKind::Image, AssetId(project.alloc_id()))
+        .unwrap();
     assert_eq!(a.sha256.len(), 64);
     assert!(store.path_for(&a).exists());
     assert_eq!(a.original_name, "pic.png");
@@ -111,9 +114,14 @@ fn importing_identical_bytes_twice_stores_one_file() {
     fs::write(&a_path, b"same bytes").unwrap();
     fs::write(&b_path, b"same bytes").unwrap();
 
+    let mut project = sample();
     let mut store = AssetStore::new(&root);
-    let a = store.import(&a_path, AssetKind::Image).unwrap();
-    let b = store.import(&b_path, AssetKind::Image).unwrap();
+    let a = store
+        .import(&a_path, AssetKind::Image, AssetId(project.alloc_id()))
+        .unwrap();
+    let b = store
+        .import(&b_path, AssetKind::Image, AssetId(project.alloc_id()))
+        .unwrap();
     assert_eq!(a.sha256, b.sha256);
     assert_eq!(store.path_for(&a), store.path_for(&b));
 
