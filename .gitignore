@@ -28,3 +28,8 @@ Desktop.ini
 /tests/output/
 **/snapshots/*.snap.new
 spikes/target/
+
+# Third-party test assets are kept outside this repository (they live in
+# ../animus-demo-files) because their terms do not all permit
+# redistribution. This entry is a guard in case any land here again.
+/demo-files/
