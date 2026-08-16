@@ -23,6 +23,15 @@ pub enum MigrateError {
     FromTheFuture { found: u32, supported: u32 },
     #[error("migration {from} -> {to} failed: {reason}")]
     Failed { from: u32, to: u32, reason: String },
+    /// `0` is never a valid `schema_version` — versions start at 1 — so a
+    /// file claiming version 0 is malformed (hand-edited or truncated),
+    /// not merely old. Rejected explicitly here rather than reaching
+    /// `MIGRATIONS[(v - 1) as usize]` below with `v == 0`: `v - 1`
+    /// underflows a `u32` (panics in debug, wraps to a huge index that
+    /// then panics on out-of-bounds access in release) once `MIGRATIONS`
+    /// is non-empty. A malformed file must produce an error, not a panic.
+    #[error("project schema version {found} is not valid: schema versions start at 1")]
+    InvalidVersion { found: u32 },
 }
 
 pub type Migration = fn(&mut Value) -> Result<(), MigrateError>;
@@ -41,6 +50,9 @@ pub type Migration = fn(&mut Value) -> Result<(), MigrateError>;
 pub const MIGRATIONS: &[Migration] = &[];
 
 pub fn run(value: &mut Value, from: u32) -> Result<(), MigrateError> {
+    if from == 0 {
+        return Err(MigrateError::InvalidVersion { found: from });
+    }
     if from > CURRENT_SCHEMA_VERSION {
         return Err(MigrateError::FromTheFuture {
             found: from,

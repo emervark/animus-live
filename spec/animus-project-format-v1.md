@@ -90,12 +90,21 @@ error much later, when the file is loaded and some unrelated field turns
 out to have the wrong JSON type.
 
 IDs (`schema_version`'s neighbors like `next_id`, and every `*_id`-typed
-value below) are plain, non-negative JSON integers. `0` is reserved and
-never appears as an in-use ID — it means "unset" in contexts that allow
-it. IDs are never reused within a project: once allocated (tracked by the
-project-wide counter `next_id`), an ID is never handed out again, even if
-the entity it named is deleted, so a stale reference is detectably
-dangling rather than silently pointing at a different, later object.
+value below) are non-negative integers. In *value* position (a field
+whose value is an ID, e.g. a `Layer`'s `id`, or a puppet's `texture`)
+they are written as plain JSON integers. In *key* position — the
+`assets`, `layer_data`, and `puppets` maps, and a skeleton's `joints` and
+`bones` maps, all of which are keyed by ID — they are written as decimal
+numeric strings (`"10"`, not `10`), because JSON object keys are always
+strings; there is no other representation available. A conforming reader
+must accept both forms: a plain integer wherever an ID appears as a
+value, and a numeric string wherever an ID appears as a map key. `0` is
+reserved and never appears as an in-use ID — it means "unset" in contexts
+that allow it. IDs are never reused within a project: once allocated
+(tracked by the project-wide counter `next_id`), an ID is never handed
+out again, even if the entity it named is deleted, so a stale reference
+is detectably dangling rather than silently pointing at a different,
+later object.
 
 ### 4.1 Top level
 

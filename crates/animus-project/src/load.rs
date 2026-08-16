@@ -33,6 +33,11 @@ pub fn load(dir: &Path) -> Result<Project, ProjectError> {
             ProjectError::SchemaTooNew { found, supported }
         }
         MigrateError::Failed { from, to, reason } => ProjectError::Migration { from, to, reason },
+        MigrateError::InvalidVersion { found } => ProjectError::Migration {
+            from: found,
+            to: CURRENT_SCHEMA_VERSION,
+            reason: "schema versions start at 1; 0 is not a valid schema_version".to_string(),
+        },
     })?;
 
     Ok(serde_json::from_value(value)?)

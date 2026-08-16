@@ -29,6 +29,18 @@ fn migrating_from_a_future_version_is_an_error() {
 }
 
 #[test]
+fn migrating_from_schema_version_zero_is_an_error_not_a_panic() {
+    // 0 is never a valid schema_version (versions start at 1); a
+    // hand-edited or truncated file claiming it must be rejected
+    // cleanly, not crash `MIGRATIONS[(v - 1) as usize]`'s `v - 1`.
+    let mut v = json!({ "schema_version": 0 });
+    assert!(matches!(
+        run(&mut v, 0),
+        Err(MigrateError::InvalidVersion { found: 0 })
+    ));
+}
+
+#[test]
 fn every_committed_fixture_migrates_to_the_current_version_and_loads() {
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../spec/fixtures");
     let mut checked = 0;

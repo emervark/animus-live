@@ -4,6 +4,36 @@
 //! reference is detectably dangling rather than silently pointing at a
 //! different object. `0` is reserved as an "unset" sentinel and is never
 //! handed out.
+//!
+//! ## Wire shape: a number in value position, a string in key position
+//!
+//! An ID is a plain JSON integer wherever it appears as a *value* (a
+//! `Layer`'s `id` field, a puppet's `texture` field, and so on). But
+//! several of the maps in this format — `Project::assets`,
+//! `Project::layer_data`, `Project::puppets`, and a skeleton's `joints`
+//! and `bones` — are keyed *by* ID, and JSON object keys are always
+//! strings; there is no other representation available. So the same ID
+//! type must also deserialize from a decimal numeric string (`"10"`) when
+//! it appears as a map key, and this is not a JSON quirk isolated to one
+//! part of the codec: it's a hard requirement of the format itself, and
+//! `spec/animus-project-format-v1.md` §4 documents both forms as
+//! conformant.
+//!
+//! That's why `$name` below is *not* `#[derive(Deserialize)]` with
+//! `#[serde(transparent)]`: deriving would delegate straight to `u64`'s
+//! `Deserialize`, which accepts only a bare number. That happens to work
+//! when `serde_json`'s own `Deserializer` drives a map key directly — its
+//! map-key deserializer parses a string key like `"2"` into `u64` for
+//! us — but it silently breaks for an ID used as a map key *inside* an
+//! internally- or adjacently-tagged enum (e.g. `SkeletonData`'s
+//! `joints`/`bones` maps, reached through `PuppetKind`): those are
+//! deserialized a second time from serde's buffered `Content`
+//! representation, which has no such string-to-number coercion, and fail
+//! with "invalid type: string ..., expected u64" on every such key. The
+//! hand-written `Deserialize` impl below accepts both a bare number and a
+//! numeric string in every context, which is what actually lets this
+//! format round-trip. See `ids::tests` for the map-key-in-a-tagged-enum
+//! regression this guards.
 
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -24,18 +54,9 @@ macro_rules! define_id {
             }
         }
 
-        // Not `#[derive(Deserialize)]` with `#[serde(transparent)]`: that
-        // delegates straight to `u64`'s `Deserialize`, which only accepts
-        // a JSON number. That's fine when `serde_json`'s own `Deserializer`
-        // drives it directly — its map-key deserializer parses a string
-        // key like `"2"` into `u64` for us. But an ID used as a map key
-        // *inside* an internally- or adjacently-tagged enum (e.g. a
-        // `SkeletonData` nested in `PuppetKind`) is deserialized a second
-        // time from serde's buffered `Content` representation, which has
-        // no such string-to-number coercion and fails with "invalid
-        // type: string ..., expected u64" on every such key. Accepting
-        // both a bare number and a numeric string here makes IDs work
-        // as map keys in both contexts.
+        // Accepts both a bare number and a numeric string; see the
+        // module-level doc comment above for why both are required, not
+        // just tolerated.
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
             where
@@ -179,5 +200,57 @@ mod tests {
         assert_eq!(json, "42");
         let back: PuppetId = serde_json::from_str("42").unwrap();
         assert_eq!(back, PuppetId(42));
+    }
+
+    #[test]
+    fn ids_deserialize_from_a_bare_number_and_from_a_numeric_string() {
+        // Both forms are conformant per spec/animus-project-format-v1.md
+        // §4: a bare number in value position, a numeric string in key
+        // position (JSON object keys are always strings).
+        assert_eq!(serde_json::from_str::<JointId>("2").unwrap(), JointId(2));
+        assert_eq!(
+            serde_json::from_str::<JointId>("\"2\"").unwrap(),
+            JointId(2)
+        );
+    }
+
+    /// Minimal reproduction of the shape that actually broke: an
+    /// ID-keyed map (like `SkeletonData::joints`) nested inside an
+    /// internally-tagged enum (like `PuppetKind`). JSON object keys are
+    /// always strings, so `joints` necessarily serializes its `JointId`
+    /// keys as `"2"`. When *this* enum's content is deserialized, serde
+    /// buffers it into its private `Content` representation first and
+    /// re-drives deserialization from that buffer — which has no
+    /// string-to-number coercion for map keys, unlike `serde_json`'s
+    /// `Deserializer` driving a top-level map directly.
+    ///
+    /// Against the old `#[derive(Deserialize)]` + `#[serde(transparent)]`
+    /// impl (delegating straight to `u64`'s `Deserialize`, which accepts
+    /// only a bare number) this failed with "invalid type: string \"2\",
+    /// expected u64". Run against that derive, this test is RED; it is
+    /// the regression guard for the hand-written impl above.
+    #[test]
+    fn an_id_used_as_a_map_key_inside_a_tagged_enum_round_trips() {
+        use indexmap::IndexMap;
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum Kind {
+            Mesh { joints: IndexMap<JointId, String> },
+        }
+
+        let mut joints = IndexMap::new();
+        joints.insert(JointId(2), "root".to_string());
+        let value = Kind::Mesh { joints };
+
+        let json = serde_json::to_string(&value).unwrap();
+        assert!(
+            json.contains("\"2\":"),
+            "the map key must serialize as a JSON string, or this test isn't \
+             reproducing the shape that broke: {json}"
+        );
+
+        let back: Kind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, value);
     }
 }
