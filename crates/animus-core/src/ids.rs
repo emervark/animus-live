@@ -5,14 +5,15 @@
 //! different object. `0` is reserved as an "unset" sentinel and is never
 //! handed out.
 
-use serde::{Deserialize, Serialize};
+use serde::de::Visitor;
+use serde::{Deserialize, Deserializer, Serialize};
 
 macro_rules! define_id {
     ($(#[$m:meta])* $name:ident) => {
         $(#[$m])*
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
-            Serialize, Deserialize,
+            Serialize,
         )]
         #[serde(transparent)]
         pub struct $name(pub u64);
@@ -20,6 +21,58 @@ macro_rules! define_id {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 write!(f, "{}", self.0)
+            }
+        }
+
+        // Not `#[derive(Deserialize)]` with `#[serde(transparent)]`: that
+        // delegates straight to `u64`'s `Deserialize`, which only accepts
+        // a JSON number. That's fine when `serde_json`'s own `Deserializer`
+        // drives it directly — its map-key deserializer parses a string
+        // key like `"2"` into `u64` for us. But an ID used as a map key
+        // *inside* an internally- or adjacently-tagged enum (e.g. a
+        // `SkeletonData` nested in `PuppetKind`) is deserialized a second
+        // time from serde's buffered `Content` representation, which has
+        // no such string-to-number coercion and fails with "invalid
+        // type: string ..., expected u64" on every such key. Accepting
+        // both a bare number and a numeric string here makes IDs work
+        // as map keys in both contexts.
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: Deserializer<'de>,
+            {
+                struct IdVisitor;
+
+                impl<'de> Visitor<'de> for IdVisitor {
+                    type Value = u64;
+
+                    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                        write!(f, "an integer or a string containing one")
+                    }
+
+                    fn visit_u64<E>(self, v: u64) -> Result<u64, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        Ok(v)
+                    }
+
+                    fn visit_i64<E>(self, v: i64) -> Result<u64, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        u64::try_from(v).map_err(E::custom)
+                    }
+
+                    fn visit_str<E>(self, v: &str) -> Result<u64, E>
+                    where
+                        E: serde::de::Error,
+                    {
+                        v.parse().map_err(E::custom)
+                    }
+                }
+
+                deserializer.deserialize_any(IdVisitor).map($name)
             }
         }
     };

@@ -7,6 +7,7 @@
 pub mod doc;
 pub mod ids;
 pub mod mesh;
+pub mod migrate;
 pub mod remap;
 pub mod silhouette;
 pub mod skeleton;

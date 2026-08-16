@@ -2,6 +2,7 @@
 
 use crate::error::ProjectError;
 use animus_core::doc::{CURRENT_SCHEMA_VERSION, Project};
+use animus_core::migrate::{self, MigrateError};
 use std::fs;
 use std::path::Path;
 
@@ -16,7 +17,7 @@ use std::path::Path;
 /// misinterpreted data, deep inside an unrelated field.
 pub fn load(dir: &Path) -> Result<Project, ProjectError> {
     let text = fs::read_to_string(dir.join("project.json"))?;
-    let value: serde_json::Value = serde_json::from_str(&text)?;
+    let mut value: serde_json::Value = serde_json::from_str(&text)?;
 
     let found = value
         .get("schema_version")
@@ -27,23 +28,12 @@ pub fn load(dir: &Path) -> Result<Project, ProjectError> {
             reason: "project.json has no schema_version field".to_string(),
         })? as u32;
 
-    if found > CURRENT_SCHEMA_VERSION {
-        return Err(ProjectError::SchemaTooNew {
-            found,
-            supported: CURRENT_SCHEMA_VERSION,
-        });
-    }
-
-    if found < CURRENT_SCHEMA_VERSION {
-        // Task 14 fills in the migration chain. Until then, an older
-        // schema can't be read: refuse it rather than guess at how its
-        // fields map onto the current shape.
-        return Err(ProjectError::Migration {
-            from: found,
-            to: CURRENT_SCHEMA_VERSION,
-            reason: "no migrations are implemented yet".to_string(),
-        });
-    }
+    migrate::run(&mut value, found).map_err(|e| match e {
+        MigrateError::FromTheFuture { found, supported } => {
+            ProjectError::SchemaTooNew { found, supported }
+        }
+        MigrateError::Failed { from, to, reason } => ProjectError::Migration { from, to, reason },
+    })?;
 
     Ok(serde_json::from_value(value)?)
 }
