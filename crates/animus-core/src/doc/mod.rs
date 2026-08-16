@@ -178,8 +178,8 @@ mod tests {
         assert_eq!(p.meta.name, "X");
     }
 
-    /// The types this task designed itself (spec §4.3 defers their shape to
-    /// implementation) have no test in the brief. This one constructs and
+    /// The `mesh_puppet` types (spec §4.3 defers their shape to
+    /// implementation) have no test elsewhere. This one constructs and
     /// JSON-round-trips each of them using only names reachable through
     /// `super::*` — i.e. `doc`'s public re-export surface, exactly what an
     /// external crate sees. It's a reachability check as much as a

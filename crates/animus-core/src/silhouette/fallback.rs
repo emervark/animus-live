@@ -12,10 +12,6 @@ fn opaque_points(img: &RgbaImage, threshold: u8) -> Vec<Vec2> {
         .collect()
 }
 
-fn cross(o: Vec2, a: Vec2, b: Vec2) -> f32 {
-    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-}
-
 /// Monotone-chain convex hull over the given points.
 fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
     points.sort_by(|a, b| {
@@ -31,14 +27,22 @@ fn convex_hull(mut points: Vec<Vec2>) -> Vec<Vec2> {
 
     let mut lower: Vec<Vec2> = Vec::new();
     for &p in &points {
-        while lower.len() >= 2 && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0 {
+        while lower.len() >= 2
+            && (lower[lower.len() - 1] - lower[lower.len() - 2])
+                .perp_dot(p - lower[lower.len() - 2])
+                <= 0.0
+        {
             lower.pop();
         }
         lower.push(p);
     }
     let mut upper: Vec<Vec2> = Vec::new();
     for &p in points.iter().rev() {
-        while upper.len() >= 2 && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0 {
+        while upper.len() >= 2
+            && (upper[upper.len() - 1] - upper[upper.len() - 2])
+                .perp_dot(p - upper[upper.len() - 2])
+                <= 0.0
+        {
             upper.pop();
         }
         upper.push(p);

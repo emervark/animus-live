@@ -20,7 +20,14 @@ impl MeshData {
         for old in 0..r.old_len() {
             if r.map(old).is_some() {
                 positions.push(self.positions[old as usize]);
-                uvs.push(self.uvs[old as usize]);
+                // `uvs` is not guaranteed to be the same length as
+                // `positions`: `invariants::validate` treats
+                // `UvCountMismatch` as reportable but non-fatal, so a
+                // hand-edited or third-party project.json can load with a
+                // short (or missing) `uvs` array. `.get` + a default keeps
+                // this compaction infallible instead of indexing straight
+                // into a possibly-shorter array.
+                uvs.push(self.uvs.get(old as usize).copied().unwrap_or_default());
             }
         }
         self.positions = positions;
@@ -111,6 +118,20 @@ mod tests {
         // Triangle [0,3,1] referenced the victim and is gone.
         // Triangle [0,2,3] survives, remapped to [0,1,2].
         assert_eq!(m.triangles, vec![0, 1, 2]);
+        assert_eq!(r.new_len(), 3);
+    }
+
+    #[test]
+    fn a_short_uvs_array_does_not_panic_on_vertex_deletion() {
+        // `invariants::validate` treats `UvCountMismatch` as reportable but
+        // non-fatal, so a hand-edited or third-party project.json can load
+        // cleanly with fewer uvs than positions. Deleting a vertex must not
+        // panic on that document.
+        let mut m = quad();
+        m.uvs.pop(); // now shorter than positions
+        let r = m.remove_vertices_internal(&[1]);
+        assert_eq!(m.positions.len(), 3);
+        assert_eq!(m.uvs.len(), 3, "uvs must stay parallel to positions");
         assert_eq!(r.new_len(), 3);
     }
 

@@ -12,7 +12,7 @@ fn perpendicular_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     }
     // |ab x ap| / |ab|
     let ap = p - a;
-    (ab.x * ap.y - ab.y * ap.x).abs() / len
+    ab.perp_dot(ap).abs() / len
 }
 
 /// Standard recursive RDP over an *open* polyline; keeps both endpoints.

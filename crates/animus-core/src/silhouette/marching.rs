@@ -1,10 +1,10 @@
 //! In-house marching squares over a binary mask.
 //!
 //! Written in-house rather than pulling in the `contour` crate: that crate
-//! has been unmaintained since April 2024, and the topology step (Task 10
-//! Step 7) needs direct control over ring output — in particular, being
-//! able to trust that a hole boundary and its outer boundary come out as
-//! two separate, independently-oriented rings.
+//! has been unmaintained since April 2024, and the topology step (see
+//! `crate::silhouette::topology`) needs direct control over ring output —
+//! in particular, being able to trust that a hole boundary and its outer
+//! boundary come out as two separate, independently-oriented rings.
 //!
 //! # Sampling convention
 //!

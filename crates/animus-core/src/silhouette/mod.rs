@@ -9,7 +9,7 @@
 //! counter-clockwise, and **negative** for one that runs clockwise. We take
 //! that as the canonical convention for the whole crate: outer boundaries
 //! are normalized to positive area (CCW), holes to negative area (CW).
-//! Task 11's triangulator must agree with this sign, not invert it.
+//! The `triangulate` module must agree with this sign, not invert it.
 
 mod alpha;
 mod fallback;

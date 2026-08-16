@@ -13,8 +13,8 @@ use i_overlay::float::simplify::SimplifyShape;
 /// axis correction is applied. In that space, this is positive for a ring
 /// that runs counter-clockwise as drawn on screen, negative for clockwise.
 /// [`build_rings`] normalizes outer rings to positive and holes to
-/// negative, so downstream code (including Task 11's triangulator) can rely
-/// on that sign without re-deriving it.
+/// negative, so downstream code (including the `triangulate` module) can
+/// rely on that sign without re-deriving it.
 pub fn signed_area(points: &[Vec2]) -> f32 {
     let n = points.len();
     if n < 3 {
@@ -39,6 +39,14 @@ pub fn signed_area(points: &[Vec2]) -> f32 {
 /// is inside the shape.
 pub(crate) fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
     let n = poly.len();
+    if n < 3 {
+        // Not a real polygon (0, 1 or 2 points can't enclose anything).
+        // `bounding_box_ring`'s zero-point fallback for an image with no
+        // opaque pixels is exactly this shape, and it can reach here
+        // through `triangulate`, `poisson_disc`, and `filter::inside_shape`
+        // — treat it as containing nothing rather than underflowing `n - 1`.
+        return false;
+    }
     let mut inside = false;
     let mut j = n - 1;
     for i in 0..n {
@@ -55,26 +63,32 @@ pub(crate) fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
     inside
 }
 
-/// A point guaranteed to be strictly interior to `ring` (not just one of
-/// its vertices, which can sit exactly on another ring's edge and make
-/// point-in-polygon results for *that* other ring undefined).
+/// A point that, for any simple polygon, is verified strictly interior to
+/// `ring` (not just one of its vertices, which can sit exactly on another
+/// ring's edge and make point-in-polygon results for *that* other ring
+/// undefined).
 ///
-/// Uses the centroid of the first non-degenerate triangle fanned from
-/// `ring[0]` — cheap, and for any simple polygon with at least 3 non
-/// collinear points in a row, that centroid is strictly inside the
-/// triangle and (for a simple polygon) strictly inside the polygon too.
+/// Tries the centroid of each non-degenerate triangle fanned from
+/// `ring[0]` in turn, and returns the first one that `point_in_polygon`
+/// itself confirms is inside the ring. A single fan triangle is not
+/// enough on its own: `ring[0]`'s neighbors need not form a valid "ear" —
+/// character silhouettes are routinely concave (a reflex vertex two steps
+/// into the fan, or `ring[0]` itself not being able to "see" the whole
+/// ring), so the first candidate can land in a notch that is outside the
+/// polygon. Falls back to `ring[0]` if every fan triangle fails (a
+/// pathological ring only a degenerate self-union could produce).
 fn interior_point(ring: &[Vec2]) -> Vec2 {
     let n = ring.len();
     for i in 1..n.saturating_sub(1) {
         let (a, b, c) = (ring[0], ring[i], ring[i + 1]);
-        let cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        let cross = (b - a).perp_dot(c - a);
         if cross.abs() > f32::EPSILON {
-            return (a + b + c) / 3.0;
+            let candidate = (a + b + c) / 3.0;
+            if point_in_polygon(candidate, ring) {
+                return candidate;
+            }
         }
     }
-    // Degenerate (collinear) ring: fall back to the first vertex. This
-    // can't happen for anything that survived the min-area filter, but
-    // never panic here.
     ring.first().copied().unwrap_or(Vec2::ZERO)
 }
 
@@ -175,4 +189,40 @@ pub(super) fn build_rings(raw: Vec<Vec<Vec2>>, min_area: f32) -> Vec<Ring> {
     });
 
     rings
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interior_point_is_sound_for_a_concave_ring() {
+        // A "dart": going P0 -> P1 -> P2 -> P3, P1 is a reflex vertex
+        // pushed into the shape, so the naive fan triangle (P0, P1, P2) is
+        // exactly the notch that was carved OUT of the shape -- not part of
+        // its interior. Its centroid, (10, 1.33), sits inside that notch.
+        // `interior_point` must not just trust the first fan triangle; it
+        // must verify each candidate against the ring itself.
+        let dart = vec![
+            Vec2::new(0.0, 0.0),
+            Vec2::new(10.0, 4.0),
+            Vec2::new(20.0, 0.0),
+            Vec2::new(10.0, 20.0),
+        ];
+        let p = interior_point(&dart);
+        assert!(
+            point_in_polygon(p, &dart),
+            "interior_point returned {p:?}, which is outside its own ring"
+        );
+    }
+
+    #[test]
+    fn point_in_polygon_rejects_degenerate_polygons_without_panicking() {
+        assert!(!point_in_polygon(Vec2::ZERO, &[]));
+        assert!(!point_in_polygon(Vec2::ZERO, &[Vec2::ZERO]));
+        assert!(!point_in_polygon(
+            Vec2::ZERO,
+            &[Vec2::ZERO, Vec2::new(1.0, 1.0)]
+        ));
+    }
 }

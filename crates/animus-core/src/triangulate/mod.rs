@@ -3,9 +3,9 @@
 //! Pipeline: constrained Delaunay triangulation ([`cdt`]) over the ring
 //! boundaries plus Poisson-disc-sampled interior points ([`points`]), then
 //! centroid/degenerate filtering and winding normalization ([`filter`]),
-//! then vertex compaction (reusing [`crate::remap::IndexRemap`] — see Task
-//! 8, there is exactly one compaction path in this crate) and UV
-//! assignment.
+//! then vertex compaction (reusing [`crate::remap::IndexRemap`] — see
+//! `crate::remap`, there is exactly one compaction path in this crate) and
+//! UV assignment.
 
 mod cdt;
 mod filter;
@@ -60,8 +60,8 @@ pub fn triangulate(
     let kept = filter::filter_triangles(&raw.positions, &raw.triangles, rings);
 
     // Compact away vertices no surviving triangle references. Reuses
-    // Task 8's `IndexRemap` — the single vertex-compaction path in this
-    // crate — rather than a second hand-rolled one.
+    // `crate::remap::IndexRemap` — the single vertex-compaction path in
+    // this crate — rather than a second hand-rolled one.
     let mut referenced = vec![false; raw.positions.len()];
     for tri in &kept {
         for &i in tri {
@@ -296,6 +296,24 @@ mod tests {
         let m = triangulate(&[], &params(25.0), (100, 100)).unwrap();
         assert!(m.positions.is_empty());
         assert!(m.triangles.is_empty());
+        assert_eq!(m.uvs.len(), m.positions.len());
+    }
+
+    #[test]
+    fn a_zero_point_ring_alongside_a_real_ring_does_not_panic() {
+        // `silhouette::bounding_box_ring` returns exactly this shape for an
+        // image with no opaque pixels, and it is the last rung of the
+        // fallback ladder feeding `triangulate`. `point_in_polygon` must
+        // treat a zero-point ring as "contains nothing", not underflow.
+        let rings = vec![
+            Ring {
+                points: vec![],
+                is_hole: false,
+            },
+            square(100.0),
+        ];
+        let m = triangulate(&rings, &params(25.0), (100, 100)).unwrap();
+        assert!(!m.triangles.is_empty());
         assert_eq!(m.uvs.len(), m.positions.len());
     }
 
