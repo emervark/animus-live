@@ -4,4 +4,5 @@
 //! platform with no GPU. See the design spec, section 3.1.
 #![forbid(unsafe_code)]
 
+pub mod doc;
 pub mod ids;
