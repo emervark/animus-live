@@ -100,6 +100,53 @@ fn a_non_finite_float_nested_inside_an_enum_variant_is_rejected() {
 }
 
 #[test]
+fn a_model_puppet_round_trips_through_save_and_load() {
+    // `PuppetKind::Model` is the other half of the `#[serde(tag = "type")]`
+    // enum whose `Mesh` variant produced a real deserialization bug on
+    // this branch. It is otherwise never constructed anywhere in the
+    // repo, so nothing has ever driven this variant through the actual
+    // save/load path -- only through `serde_json` unit round-trips inside
+    // `doc::mod`.
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("MyShow.animus");
+
+    let mut p = sample();
+    let texture_id = AssetId(p.alloc_id());
+    let model_puppet = ModelPuppet {
+        asset: texture_id,
+        scene_index: 2,
+        animation: Some("Walk".into()),
+        driven_joints: vec![DrivenJoint {
+            node_name: "Head".into(),
+            channel: "look_at".into(),
+        }],
+    };
+    let puppet_id = PuppetId(p.alloc_id());
+    p.puppets.insert(
+        puppet_id,
+        Puppet {
+            id: puppet_id,
+            name: "Robot".into(),
+            kind: PuppetKind::Model(model_puppet),
+        },
+    );
+
+    save(&p, &root).unwrap();
+    let back = load(&root).unwrap();
+    assert_eq!(to_json(&back).unwrap(), to_json(&p).unwrap());
+
+    match &back.puppets[&puppet_id].kind {
+        PuppetKind::Model(m) => {
+            assert_eq!(m.scene_index, 2);
+            assert_eq!(m.animation.as_deref(), Some("Walk"));
+            assert_eq!(m.driven_joints.len(), 1);
+            assert_eq!(m.driven_joints[0].node_name, "Head");
+        }
+        other => panic!("expected PuppetKind::Model, got {other:?}"),
+    }
+}
+
+#[test]
 fn a_newer_schema_version_is_refused_with_a_clear_error() {
     let dir = tempdir().unwrap();
     let root = dir.path().join("MyShow.animus");

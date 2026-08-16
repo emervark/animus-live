@@ -173,4 +173,34 @@ fn generate_fixtures() {
         }
     }
     save(&nested, "nested_island.png");
+
+    // crescent.png: a filled circle minus an off-centre filled circle of
+    // similar radius, leaving a concave "C"/crescent shape. Every other
+    // fixture in this file is a circle, a square, or concentric circles —
+    // all convex-at-every-vertex once traced. Character silhouettes are
+    // routinely concave (the design spec's own example is a tooth visible
+    // inside an open mouth), and nothing here exercised that until now.
+    let mut crescent = RgbaImage::new(200, 200);
+    let bite_cx = cx + 35.0; // offset far enough to leave a real crescent, not a ring
+    for y in 0..200 {
+        for x in 0..200 {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let in_outer = (dx * dx + dy * dy).sqrt() <= r;
+            let bdx = x as f32 + 0.5 - bite_cx;
+            let bdy = y as f32 + 0.5 - cy;
+            let in_bite = (bdx * bdx + bdy * bdy).sqrt() <= r;
+            let inside = in_outer && !in_bite;
+            crescent.put_pixel(
+                x,
+                y,
+                if inside {
+                    Rgba([255, 255, 255, 255])
+                } else {
+                    Rgba([0, 0, 0, 0])
+                },
+            );
+        }
+    }
+    save(&crescent, "crescent.png");
 }
