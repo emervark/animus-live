@@ -73,21 +73,34 @@ struct FrameCounter(u32);
 #[derive(Resource, Debug, Clone, Default)]
 struct SpikeArgs {
     auto_close_frames: Option<u32>,
+    /// When false (`--no-resize-debounce`), the render target is resized on
+    /// every frame the panel size changes, with no stability wait. This is
+    /// the comparison that establishes whether the debounce is load-bearing
+    /// or merely present.
+    resize_debounce: bool,
 }
 
 impl SpikeArgs {
     fn parse() -> Self {
         let args: Vec<String> = std::env::args().collect();
         let mut auto_close_frames = None;
+        let mut resize_debounce = true;
         let mut i = 1;
         while i < args.len() {
-            if args[i] == "--auto-close" {
-                i += 1;
-                auto_close_frames = args.get(i).and_then(|s| s.parse().ok());
+            match args[i].as_str() {
+                "--auto-close" => {
+                    i += 1;
+                    auto_close_frames = args.get(i).and_then(|s| s.parse().ok());
+                }
+                "--no-resize-debounce" => resize_debounce = false,
+                other => eprintln!("[m0-2] ignoring unrecognized arg: {other}"),
             }
             i += 1;
         }
-        Self { auto_close_frames }
+        Self {
+            auto_close_frames,
+            resize_debounce,
+        }
     }
 }
 
@@ -231,6 +244,34 @@ fn draw_world_grid(gizmos: &mut Gizmos) {
     );
 }
 
+/// Constant-speed motion in the viewport scene.
+///
+/// The scene was entirely static, which makes two of this spike's checks
+/// impossible to judge: a still grid cannot show a dropped frame, so
+/// "does rapid resizing cause stutter?" and "does the viewport stay
+/// interactive?" had nothing to look at. An orbiting marker at constant
+/// angular speed turns any frame-time hitch into visible jerk.
+fn draw_motion_reference(gizmos: &mut Gizmos, t: f32) {
+    let radius = 6.0;
+    let angle = t * 1.2;
+    let orbit = Vec3::new(radius * angle.cos(), radius * angle.sin(), 0.0);
+    gizmos.line(Vec3::ZERO, orbit, Color::srgba(0.3, 0.8, 1.0, 0.5));
+    gizmos.circle(
+        Isometry3d::from_translation(orbit),
+        0.4,
+        Color::srgb(0.3, 0.8, 1.0),
+    );
+
+    // A second marker in pure translation: rotation and translation can
+    // stutter differently, and a sweep is easier to read at the edges.
+    let x = (t * 1.7).sin() * 8.0;
+    gizmos.circle(
+        Isometry3d::from_translation(Vec3::new(x, -8.5, 0.0)),
+        0.35,
+        Color::srgb(1.0, 0.6, 0.2),
+    );
+}
+
 /// Draws a crosshair at the last sampled click position.
 ///
 /// The module header claimed this existed from the start; it did not. Without
@@ -247,6 +288,9 @@ fn draw_click_crosshair(gizmos: &mut Gizmos, world: Vec2, arm: f32) {
 
 struct TabViewerImpl<'a> {
     tex_id: egui::TextureId,
+    /// False under `--no-resize-debounce`: queue every size change
+    /// immediately, with no pixel deadzone and no stability wait.
+    resize_debounce: bool,
     viewport_state: &'a mut ViewportState,
     camera: (
         &'a Camera,
@@ -299,7 +343,7 @@ impl<'a> TabViewerImpl<'a> {
         // pan) works either way, which is what made the omission easy to miss.
         let response = ui.add(
             egui::Image::new(egui::load::SizedTexture::new(self.tex_id, image_size))
-                .sense(egui::Sense::click()),
+                .sense(egui::Sense::click_and_drag()),
         );
         let image_rect = response.rect;
 
@@ -317,7 +361,8 @@ impl<'a> TabViewerImpl<'a> {
             ((image_rect.height() * ppp).round() as u32).max(1),
         );
         let delta = physical.as_ivec2() - self.viewport_state.current_tex_size.as_ivec2();
-        if delta.x.abs() > 2 || delta.y.abs() > 2 {
+        let deadzone = if self.resize_debounce { 2 } else { 0 };
+        if delta.x.abs() > deadzone || delta.y.abs() > deadzone {
             if self.viewport_state.pending_resize == Some(physical) {
                 self.viewport_state.stable_frames += 1;
             } else {
@@ -337,6 +382,19 @@ impl<'a> TabViewerImpl<'a> {
         // propagate through Bevy's transform/camera update systems first.
         let (camera, projection, global_transform, transform) = &mut self.camera;
         let hovered = response.hovered();
+
+        // Probe the actual world-units-per-physical-pixel by unprojecting two
+        // points 100px apart. Measured rather than computed, so it stays
+        // correct regardless of what `OrthographicProjection::scale` means
+        // under the current `ScalingMode` -- and pan below depends on getting
+        // this right.
+        if let (Ok(a), Ok(b)) = (
+            camera.viewport_to_world_2d(global_transform, Vec2::ZERO),
+            camera.viewport_to_world_2d(global_transform, Vec2::new(100.0, 0.0)),
+        ) {
+            self.viewport_state.world_per_px = (b.x - a.x).abs() / 100.0;
+        }
+        let world_per_px = self.viewport_state.world_per_px;
         // NOTE: the obvious-looking guard `!ui.ctx().wants_pointer_input()`
         // must NOT be used here. In egui 0.34 that expands to
         // `egui_is_using_pointer() || (is_pointer_over_egui() && !any_down())`,
@@ -380,29 +438,32 @@ impl<'a> TabViewerImpl<'a> {
 
             // Middle-drag pans, scaled by proj.scale / image_height so the
             // point under the cursor tracks 1:1.
-            let middle_down = ui.input(|i| i.pointer.middle_down());
-            if middle_down {
-                let drag_delta = ui.input(|i| i.pointer.delta());
-                if let Projection::Orthographic(ortho) = &**projection {
-                    let world_per_px = ortho.scale / image_rect.height().max(1.0) * ppp;
-                    transform.translation.x -= drag_delta.x * world_per_px;
-                    transform.translation.y += drag_delta.y * world_per_px;
-                }
+            // Middle-drag must go through `dragged_by`, not a raw
+            // `pointer.middle_down()` check. egui only reports a drag on a
+            // widget that senses drags, and the image sensed clicks only, so
+            // the raw check panned for the frame or two before egui settled
+            // the press into "not a drag on this widget" and `hovered()` went
+            // false -- about 10px of movement, then nothing. This is the same
+            // route egui's own `Scene` container uses for middle-button pan.
+            let middle_drag = response.dragged_by(egui::PointerButton::Middle);
+            if middle_drag && world_per_px > 0.0 {
+                // egui reports the drag in logical points; `world_per_px` is
+                // per *physical* pixel, so scale by `ppp` between them.
+                //
+                // This previously used `ortho.scale / image_rect.height() *
+                // ppp`, which assumed `scale` is the world height of the
+                // viewport. Under `ScalingMode::WindowSize` it is not: the
+                // expression yielded ~0.0018 world/px where the camera's real
+                // figure is 0.0500 -- about 28x too small, so a 100px drag
+                // moved the camera a fifth of a grid cell and panning looked
+                // like it did nothing at all.
+                let drag_delta = response.drag_delta();
+                transform.translation.x -= drag_delta.x * ppp * world_per_px;
+                transform.translation.y += drag_delta.y * ppp * world_per_px;
             }
         }
 
         // --- Click accuracy (Task 3 Step 5) ---
-        // Probe the actual world-units-per-physical-pixel by unprojecting two
-        // points 100px apart. Measured rather than computed, so it stays
-        // correct regardless of what `OrthographicProjection::scale` means
-        // under the current `ScalingMode`.
-        if let (Ok(a), Ok(b)) = (
-            camera.viewport_to_world_2d(global_transform, Vec2::ZERO),
-            camera.viewport_to_world_2d(global_transform, Vec2::new(100.0, 0.0)),
-        ) {
-            self.viewport_state.world_per_px = (b.x - a.x).abs() / 100.0;
-        }
-
         if response.clicked() {
             if let Some(pointer) = response.interact_pointer_pos() {
                 let pixel_in_image = Vec2::new(
@@ -450,8 +511,11 @@ fn ui_system(
         With<ViewportCamera>,
     >,
     mut gizmos: Gizmos,
+    time: Res<Time>,
+    args: Res<SpikeArgs>,
 ) -> Result {
     draw_world_grid(&mut gizmos);
+    draw_motion_reference(&mut gizmos, time.elapsed_secs());
     if let Some(world) = viewport_state.last_click_world {
         // ~12 physical pixels per arm, so the mark reads the same at any zoom.
         let arm = (viewport_state.world_per_px * 12.0).max(f32::EPSILON);
@@ -473,6 +537,7 @@ fn ui_system(
         .show(ctx, |ui| {
             let mut viewer = TabViewerImpl {
                 tex_id,
+                resize_debounce: args.resize_debounce,
                 viewport_state: &mut viewport_state,
                 camera: (camera, &mut projection, global_transform, &mut transform),
             };
@@ -493,11 +558,12 @@ fn apply_debounced_resize(
     mut images: ResMut<Assets<Image>>,
     viewport_image: Res<ViewportImage>,
     mut state: ResMut<ViewportState>,
+    args: Res<SpikeArgs>,
 ) {
     let Some(pending) = state.pending_resize else {
         return;
     };
-    if state.stable_frames < 2 {
+    if args.resize_debounce && state.stable_frames < 2 {
         return;
     }
     if let Some(mut image) = images.get_mut(&viewport_image.0) {
