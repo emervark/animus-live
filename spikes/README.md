@@ -10,19 +10,28 @@ in `docs/spikes/`.
 
 ## Run
 
+Run these **from the `spikes/` directory**. Cargo finds `.cargo/config.toml`
+by walking up from the working directory, so building from the repo root
+would miss the shared target dir and compile Bevy once per spike.
+
 ```
+cd spikes
+
 # M0-1: procedural skinned mesh (grid, TOP-marker texture, joint ceiling, stress test)
-cargo run --release --manifest-path spikes/m0_1_skinned_mesh/Cargo.toml -- [--auto-close <frames>] [--stress] [--joints <N>] [--no-bounds-fix] [--no-animate]
+cargo run --release --manifest-path m0_1_skinned_mesh/Cargo.toml -- [--auto-close <frames>] [--stress] [--joints <N>] [--no-bounds-fix] [--no-animate] [--edge-sweep] [--amplitude <N>]
 
 # M0-2: egui_dock render-to-texture viewport (pan/zoom/click, world-grid readout)
-cargo run --release --manifest-path spikes/m0_2_egui_viewport/Cargo.toml -- [--auto-close <frames>]
+cargo run --release --manifest-path m0_2_egui_viewport/Cargo.toml -- [--auto-close <frames>]
 
 # M0-3: Spout sender, CPU readback path by default (frame counter, --path-a for the dead GPU-shared path)
-cargo run --release --manifest-path spikes/m0_3_spout/Cargo.toml -- [--path-a] [--auto-close <frames>] [--width <px> --height <px>]
+cargo run --release --manifest-path m0_3_spout/Cargo.toml -- [--path-a] [--auto-close <frames>] [--width <px> --height <px>]
 
 # M0-4: second window, RenderLayers isolation, vsync coupling
-cargo run --release --manifest-path spikes/m0_4_second_window/Cargo.toml -- [--editor-vsync on|off] [--output-vsync on|off] [--auto-close <frames>]
+cargo run --release --manifest-path m0_4_second_window/Cargo.toml -- [--editor-vsync on|off] [--output-vsync on|off] [--auto-close <frames>]
 ```
+
+Built binaries land in `spikes/target/release/` and can be started directly
+without Cargo.
 
 All four accept `--auto-close <frames>`, which closes the window after N
 frames and prints measured diagnostics to stdout -- this is how each spike's

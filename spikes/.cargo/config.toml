@@ -1,8 +1,14 @@
 # All four M0 spikes share one target directory so Bevy compiles once,
-# not four times. Absolute path because target-dir resolution is
-# cwd-relative and each spike builds from its own directory.
+# not four times. The path is relative: Cargo resolves `build.target-dir`
+# against the directory holding this config file, so this is `spikes/target`
+# on any machine and any checkout path.
+#
+# Cargo discovers this file by walking up from the *current working
+# directory*, not from --manifest-path. Build from inside `spikes/` (see
+# spikes/README.md) or this config -- and the shared target dir with it --
+# is silently ignored.
 [build]
-target-dir = "C:/dev/animata/spikes/target"
+target-dir = "target"
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld.exe"
