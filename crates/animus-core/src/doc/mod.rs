@@ -4,14 +4,21 @@
 //! types. Nothing ever writes back into them from the scene graph.
 
 mod asset;
+pub mod command;
 mod layer;
 mod mesh_puppet;
 mod model_puppet;
 mod puppet;
 mod solver_cfg;
 mod stage;
+pub mod undo;
 
 pub use asset::{AssetKind, AssetRef};
+pub use command::{
+    AddLayer, AddPuppet, BoneParam, CommandError, DocChange, DocCommand, LayerScalar,
+    MoveJointRest, PendingChanges, RemovePuppet, RenameLayer, ReorderLayers, ReplacePuppet,
+    SetBoneParam, SetJointPinned, SetLayerScalar,
+};
 pub use layer::{BlendMode, Layer, Transform2Or3};
 pub use mesh_puppet::{
     AlphaModeCfg, Attachment, AttachmentTable, AutoMeshMode, AutoMeshParams, Bone, Joint,
@@ -21,6 +28,7 @@ pub use model_puppet::{DrivenJoint, ModelPuppet};
 pub use puppet::{Puppet, PuppetKind};
 pub use solver_cfg::SolverConfig;
 pub use stage::StageConfig;
+pub use undo::{UndoStack, apply_command};
 
 use crate::ids::*;
 use indexmap::IndexMap;

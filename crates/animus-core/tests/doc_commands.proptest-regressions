@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a8a1e363ea123845b5798173e265d186c03fb2a3659037b51cd0845c25cce4dc # shrinks to ops = [MoveJoint(2, 0.0, 0.0), MoveJoint(2, 0.0, 0.0)]
