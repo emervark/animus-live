@@ -1,0 +1,11 @@
+[package]
+name = "m0-2-egui-viewport"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy      = "=0.19.1"
+bevy_egui = "=0.40"
+egui      = "=0.34"
+egui_dock = "=0.19.1"
