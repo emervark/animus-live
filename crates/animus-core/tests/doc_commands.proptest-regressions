@@ -4,4 +4,10 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
+#
+# The seed below is checked in deliberately. It was found by mutating
+# MoveJointRest::merge to overwrite `from` as well as `to` -- the classic
+# way a merged inverse-pair command stops inverting -- and it shrank to the
+# minimal case that exposes it: two consecutive moves of the same joint
+# inside one gesture. Keep it.
 cc a8a1e363ea123845b5798173e265d186c03fb2a3659037b51cd0845c25cce4dc # shrinks to ops = [MoveJoint(2, 0.0, 0.0), MoveJoint(2, 0.0, 0.0)]
