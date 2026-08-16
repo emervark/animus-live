@@ -2,7 +2,7 @@
 //! hot loop. Built once per rig and shared by `Arc` into the ECS.
 
 use crate::doc::{SkeletonData, SolverConfig};
-use crate::ids::JointId;
+use crate::ids::{BoneId, JointId};
 use glam::Vec2;
 use std::collections::HashMap;
 
@@ -26,6 +26,14 @@ pub struct CompiledRig {
     pub(crate) damping: f32,
     pub(crate) iterations: u32,
     joint_index: HashMap<JointId, u32>,
+    /// `BoneId` -> dense index into `bone_a`/`bone_b`/`rest_length`/etc.
+    ///
+    /// `BoneId`s are allocated from the project-wide `IdAlloc` sequence
+    /// shared by every entity type, so they are neither 0-based nor dense
+    /// nor contiguous for a given puppet's bones — this map, not the raw
+    /// `BoneId` value, is the only correct way to find a bone's position
+    /// in the dense arrays (see `bone_index`).
+    bone_index: HashMap<BoneId, u32>,
 }
 
 impl CompiledRig {
@@ -52,8 +60,9 @@ impl CompiledRig {
         let mut rest_length = Vec::with_capacity(skel.bones.len());
         let mut stiffness = Vec::with_capacity(skel.bones.len());
         let mut length_mul = Vec::with_capacity(skel.bones.len());
+        let mut bone_index = HashMap::with_capacity(skel.bones.len());
 
-        for bone in skel.bones.values() {
+        for (id, bone) in skel.bones.iter() {
             let (Some(&ia), Some(&ib)) = (joint_index.get(&bone.a), joint_index.get(&bone.b))
             else {
                 tracing::warn!(
@@ -67,11 +76,13 @@ impl CompiledRig {
             let rl = bone
                 .rest_length
                 .unwrap_or_else(|| (rest[ib as usize] - rest[ia as usize]).length());
+            let dense = bone_a.len() as u32;
             bone_a.push(ia);
             bone_b.push(ib);
             rest_length.push(rl);
             stiffness.push(bone.stiffness);
             length_mul.push(bone.length_mul);
+            bone_index.insert(*id, dense);
         }
 
         Self {
@@ -87,12 +98,23 @@ impl CompiledRig {
             damping: cfg.global_damping,
             iterations: cfg.iterations,
             joint_index,
+            bone_index,
         }
     }
 
     /// Dense index of `id`, if it exists in this compiled rig.
     pub fn joint_index(&self, id: JointId) -> Option<u32> {
         self.joint_index.get(&id).copied()
+    }
+
+    /// Dense index of bone `id` into `bone_a`/`bone_b`/etc — the index
+    /// `BakedInfluences::joint_index` (in `crate::skeleton`) must store,
+    /// NOT the raw `BoneId` value. `BoneId`s are allocated from a
+    /// project-wide sequence shared with every other entity type, so they
+    /// are not dense or 0-based; only this lookup is safe to use to place
+    /// a bone in the dense arrays.
+    pub fn bone_index(&self, id: BoneId) -> Option<u32> {
+        self.bone_index.get(&id).copied()
     }
 
     /// The target length (before `length_mul`) of bone `bone`.

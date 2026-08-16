@@ -99,17 +99,20 @@ mod tests {
     }
 
     /// A single vertex 0 with one `Attachment` per weight in `weights`,
-    /// bound to bones `BoneId(0)..BoneId(weights.len())` in order — the
-    /// same dense indices `rig_with_bones` gives its `CompiledRig` bones,
-    /// since `bake_influences` resolves `Attachment::bone` as a bone index
-    /// into `CompiledRig` directly.
-    fn attachments_for_one_vertex(weights: &[f32]) -> AttachmentTable {
+    /// bound to `bone_ids[i]` for `weights[i]` — i.e. the caller supplies
+    /// the actual `BoneId`s (e.g. from `rig_with_bones`'s return), rather
+    /// than this helper inventing ones that happen to equal a dense
+    /// index. `bake_influences` resolves each `Attachment::bone` through
+    /// `CompiledRig::bone_index`, so the raw `BoneId` value must never be
+    /// assumed to be a dense index.
+    fn attachments_for_one_vertex(weights: &[f32], bone_ids: &[BoneId]) -> AttachmentTable {
+        assert_eq!(weights.len(), bone_ids.len());
         let entries = weights
             .iter()
-            .enumerate()
-            .map(|(i, &weight)| Attachment {
+            .zip(bone_ids)
+            .map(|(&weight, &bone)| Attachment {
                 vertex: 0,
-                bone: BoneId(i as u64),
+                bone,
                 weight,
                 local: Vec2::ZERO,
             })
@@ -118,27 +121,36 @@ mod tests {
     }
 
     /// A `CompiledRig` with `n` bones spanning `n + 1` joints, laid end to
-    /// end along the X axis. Bones get `BoneId(0)..BoneId(n)`, matching
-    /// their dense index in the compiled rig (`SkeletonData.bones`
-    /// insertion order).
-    fn rig_with_bones(n: usize) -> CompiledRig {
+    /// end along the X axis, plus the `BoneId`s assigned to those bones in
+    /// dense-index order (`bone_ids[i]` is the bone at dense index `i`).
+    ///
+    /// The `BoneId`s are deliberately **not** `0..n` and deliberately
+    /// **not** in ascending order with dense index (`10_000 - i`, i.e.
+    /// descending): real `BoneId`s come from the project-wide `IdAlloc`
+    /// sequence shared by every entity type, so they are never dense or
+    /// 0-based per puppet. A `bake_influences` that (re-)treated
+    /// `Attachment::bone.0` as a literal dense index would misbehave
+    /// against this rig, catching the regression instead of passing by
+    /// coincidence the way an earlier version of this test suite did.
+    fn rig_with_bones(n: usize) -> (CompiledRig, Vec<BoneId>) {
         let mut skel = SkeletonData::default();
         for i in 0..=n {
-            // Joint ids start at 1: 0 is the reserved "unset" sentinel
-            // (see `ids::IdAlloc`).
-            let jid = i as u64 + 1;
+            // Joint ids offset well clear of 0 (the reserved "unset"
+            // sentinel, see `ids::IdAlloc`) and of the bone-id range below.
+            let jid = 20_000 + i as u64;
             skel.joints
                 .insert(JointId(jid), joint(jid, Vec2::new(i as f32 * 10.0, 0.0)));
         }
+        let mut bone_ids = Vec::with_capacity(n);
         for i in 0..n {
-            // Bone ids match their dense index in `CompiledRig` (0-based),
-            // which is what `bake_influences` expects `Attachment::bone`
-            // to resolve to.
-            let bid = i as u64;
-            skel.bones
-                .insert(BoneId(bid), bone(bid, bid + 1, bid + 2, 30.0));
+            let bid = 10_000 - i as u64;
+            let a = 20_000 + i as u64;
+            let b = 20_000 + i as u64 + 1;
+            skel.bones.insert(BoneId(bid), bone(bid, a, b, 30.0));
+            bone_ids.push(BoneId(bid));
         }
-        CompiledRig::build(&skel, &SolverConfig::default())
+        let rig = CompiledRig::build(&skel, &SolverConfig::default());
+        (rig, bone_ids)
     }
 
     #[test]
@@ -181,8 +193,8 @@ mod tests {
 
     #[test]
     fn bake_keeps_the_top_four_influences_and_renormalizes() {
-        let att = attachments_for_one_vertex(&[0.5, 0.3, 0.1, 0.05, 0.05]);
-        let rig = rig_with_bones(5);
+        let (rig, bone_ids) = rig_with_bones(5);
+        let att = attachments_for_one_vertex(&[0.5, 0.3, 0.1, 0.05, 0.05], &bone_ids);
         let baked = bake_influences(&att, &rig, 1).unwrap();
         let sum: f32 = baked.joint_weight[0].iter().sum();
         assert_relative_eq!(sum, 1.0, epsilon = 1e-5);
@@ -191,8 +203,8 @@ mod tests {
 
     #[test]
     fn bake_pads_with_zeros_when_there_are_fewer_than_four_influences() {
-        let att = attachments_for_one_vertex(&[1.0]);
-        let rig = rig_with_bones(1);
+        let (rig, bone_ids) = rig_with_bones(1);
+        let att = attachments_for_one_vertex(&[1.0], &bone_ids);
         let baked = bake_influences(&att, &rig, 1).unwrap();
         assert_relative_eq!(baked.joint_weight[0][0], 1.0, epsilon = 1e-5);
         assert_eq!(&baked.joint_weight[0][1..], &[0.0, 0.0, 0.0]);
@@ -201,7 +213,7 @@ mod tests {
     #[test]
     fn an_unattached_vertex_bakes_to_zero_weights_not_a_panic() {
         let att = AttachmentTable::default();
-        let rig = rig_with_bones(1);
+        let (rig, _bone_ids) = rig_with_bones(1);
         let baked = bake_influences(&att, &rig, 3).unwrap();
         assert_eq!(baked.joint_weight.len(), 3);
         assert_eq!(baked.joint_weight[0], [0.0; 4]);
@@ -211,7 +223,7 @@ mod tests {
     fn more_than_256_bones_is_a_clear_error_not_a_render_panic() {
         // Bevy's MAX_JOINTS counts entries in SkinnedMesh.joints, and per
         // spec section 7.3 those are our BONES, not our joints.
-        let rig = rig_with_bones(300);
+        let (rig, _bone_ids) = rig_with_bones(300);
         let err = bake_influences(&AttachmentTable::default(), &rig, 1).unwrap_err();
         assert!(matches!(
             err,
@@ -226,10 +238,80 @@ mod tests {
     fn top_four_selection_is_stable_under_equal_weights() {
         // Ties must break deterministically by bone index, or the golden
         // mesh changes between runs.
-        let att = attachments_for_one_vertex(&[0.2, 0.2, 0.2, 0.2, 0.2]);
-        let rig = rig_with_bones(5);
+        let (rig, bone_ids) = rig_with_bones(5);
+        let att = attachments_for_one_vertex(&[0.2, 0.2, 0.2, 0.2, 0.2], &bone_ids);
         let a = bake_influences(&att, &rig, 1).unwrap();
         let b = bake_influences(&att, &rig, 1).unwrap();
         assert_eq!(a.joint_index, b.joint_index);
+    }
+
+    #[test]
+    fn bake_resolves_bone_ids_through_the_rigs_dense_index_not_the_raw_id() {
+        // BoneIds are allocated from the project-wide IdAlloc sequence
+        // (shared with layers, joints, assets, ...), so they are never
+        // dense or 0-based for one puppet's bones. Build a rig whose
+        // three bones have deliberately non-contiguous, out-of-order ids
+        // — BoneId(17) inserted first (dense index 0), BoneId(3) second
+        // (dense index 1), BoneId(29) third (dense index 2) — so that a
+        // `bake_influences` that (mis)treated `Attachment::bone.0` as a
+        // literal dense index would either index out of bounds or select
+        // the wrong bone.
+        let mut skel = SkeletonData::default();
+        skel.joints
+            .insert(JointId(1), joint(1, Vec2::new(0.0, 0.0)));
+        skel.joints
+            .insert(JointId(2), joint(2, Vec2::new(10.0, 0.0)));
+        skel.joints
+            .insert(JointId(3), joint(3, Vec2::new(20.0, 0.0)));
+        skel.joints
+            .insert(JointId(4), joint(4, Vec2::new(30.0, 0.0)));
+        skel.bones.insert(BoneId(17), bone(17, 1, 2, 30.0));
+        skel.bones.insert(BoneId(3), bone(3, 2, 3, 30.0));
+        skel.bones.insert(BoneId(29), bone(29, 3, 4, 30.0));
+        let rig = CompiledRig::build(&skel, &SolverConfig::default());
+
+        // Sanity-check the mapping itself before relying on it below.
+        assert_eq!(rig.bone_index(BoneId(17)), Some(0));
+        assert_eq!(rig.bone_index(BoneId(3)), Some(1));
+        assert_eq!(rig.bone_index(BoneId(29)), Some(2));
+
+        let att = AttachmentTable {
+            entries: vec![Attachment {
+                vertex: 0,
+                bone: BoneId(29),
+                weight: 1.0,
+                local: Vec2::ZERO,
+            }],
+        };
+        let baked = bake_influences(&att, &rig, 1).unwrap();
+        assert_eq!(
+            baked.joint_index[0][0], 2,
+            "must store BoneId(29)'s DENSE index (2), not its raw id (29) \
+             or the AttachmentTable's insertion order"
+        );
+        assert_relative_eq!(baked.joint_weight[0][0], 1.0, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn bake_reports_an_attachment_naming_a_bone_the_rig_does_not_contain() {
+        // An AttachmentTable and a CompiledRig built from out-of-sync
+        // skeletons is a caller bug, not input to silently tolerate.
+        let (rig, _bone_ids) = rig_with_bones(1);
+        let att = AttachmentTable {
+            entries: vec![Attachment {
+                vertex: 0,
+                bone: BoneId(999_999),
+                weight: 1.0,
+                local: Vec2::ZERO,
+            }],
+        };
+        let err = bake_influences(&att, &rig, 1).unwrap_err();
+        assert!(matches!(
+            err,
+            BakeError::UnknownBone {
+                vertex: 0,
+                bone: BoneId(999_999)
+            }
+        ));
     }
 }

@@ -2,6 +2,7 @@
 //! 4-influence palette the GPU skinning pipeline consumes. See spec §7.2.
 
 use crate::doc::AttachmentTable;
+use crate::ids::BoneId;
 use crate::solver::CompiledRig;
 use std::cmp::Ordering;
 
@@ -48,6 +49,14 @@ pub enum BakeError {
     /// limit. Reported here, before the renderer would panic on it.
     #[error("rig has {count} bones, exceeding the {max}-bone skinning limit")]
     TooManyBones { count: usize, max: usize },
+    /// `att` names a bone `rig` does not contain. This is not malformed
+    /// user input to shrug off — `BoneId`s are allocated from the
+    /// project-wide `IdAlloc` sequence, so a dangling one means the
+    /// `AttachmentTable` and the `CompiledRig` it's being baked against
+    /// were built from different (or out-of-sync) skeletons, which is a
+    /// caller bug, not something to silently under-weight a vertex over.
+    #[error("attachment on vertex {vertex} names bone {bone}, which is not in this rig")]
+    UnknownBone { vertex: u32, bone: BoneId },
 }
 
 /// Bakes `att` against `rig`'s bones into a fixed 4-influence-per-vertex
@@ -61,8 +70,14 @@ pub enum BakeError {
 /// renormalized to sum to 1.0; a vertex with no attachments at all bakes
 /// to all-zero indices and weights rather than panicking.
 ///
+/// Each `Attachment::bone` is resolved to its dense index via
+/// `CompiledRig::bone_index` — never treated as a dense index itself,
+/// since `BoneId`s come from the project-wide `IdAlloc` sequence and are
+/// not 0-based or contiguous per puppet.
+///
 /// Returns `Err(BakeError::TooManyBones)` if `rig` has more than
-/// `MAX_SKIN_BONES` bones.
+/// `MAX_SKIN_BONES` bones, or `Err(BakeError::UnknownBone)` if `att`
+/// names a bone `rig` does not contain.
 pub fn bake_influences(
     att: &AttachmentTable,
     rig: &CompiledRig,
@@ -82,11 +97,11 @@ pub fn bake_influences(
         if vertex >= vertex_count {
             continue;
         }
-        let bone_index = entry.bone.0 as usize;
-        if bone_index >= bone_count {
-            continue;
-        }
-        per_vertex[vertex].push((bone_index as u32, entry.weight));
+        let bone_index = rig.bone_index(entry.bone).ok_or(BakeError::UnknownBone {
+            vertex: entry.vertex,
+            bone: entry.bone,
+        })?;
+        per_vertex[vertex].push((bone_index, entry.weight));
     }
 
     let mut joint_index = Vec::with_capacity(vertex_count);
