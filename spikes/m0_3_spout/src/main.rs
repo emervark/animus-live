@@ -20,7 +20,7 @@ use bevy::render::render_resource::{
 };
 use bevy::render::renderer::RenderAdapter;
 use bevy::render::settings::{Backends, RenderCreation, WgpuSettings};
-use bevy::render::{gpu_readback::Readback, gpu_readback::ReadbackComplete, RenderPlugin};
+use bevy::render::{RenderPlugin, gpu_readback::Readback, gpu_readback::ReadbackComplete};
 use std::sync::{Arc, Mutex};
 
 #[derive(Resource, Debug, Clone)]
@@ -151,11 +151,7 @@ fn log_adapter_backend(adapter: Res<RenderAdapter>) {
     }
 }
 
-fn setup(
-    mut commands: Commands,
-    args: Res<SpikeArgs>,
-    mut images: ResMut<Assets<Image>>,
-) {
+fn setup(mut commands: Commands, args: Res<SpikeArgs>, mut images: ResMut<Assets<Image>>) {
     commands.spawn(Camera3d::default());
     commands.spawn((
         DirectionalLight {
@@ -197,6 +193,22 @@ fn setup(
             ..default()
         },
         bevy::camera::RenderTarget::Image(image_handle.clone().into()),
+    ));
+
+    // A second 2D camera, targeting the *window*, showing the same counter
+    // entity. Without it the frame counter existed only inside the Spout
+    // stream: the window is rendered by the Camera3d above, which sees an
+    // empty scene, so the screen showed nothing to compare the OBS preview
+    // against -- making the end-to-end latency measurement this spike exists
+    // to support impossible to perform. Same `Text2d` entity, same frame, so
+    // the two numbers differ only by the Spout + OBS pipeline delay.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 2,
+            clear_color: ClearColorConfig::None,
+            ..default()
+        },
     ));
 
     // Large, legible frame counter -- the user films this against the OBS
