@@ -1,0 +1,11 @@
+[package]
+name = "m0-1-skinned-mesh"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy = "=0.19.1"
+
+[build-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
