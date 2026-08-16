@@ -27,3 +27,4 @@ Desktop.ini
 # Test output
 /tests/output/
 **/snapshots/*.snap.new
+spikes/target/

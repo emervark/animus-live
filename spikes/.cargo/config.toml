@@ -1,0 +1,8 @@
+# All four M0 spikes share one target directory so Bevy compiles once,
+# not four times. Absolute path because target-dir resolution is
+# cwd-relative and each spike builds from its own directory.
+[build]
+target-dir = "C:/dev/animata/spikes/target"
+
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
