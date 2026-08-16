@@ -22,7 +22,14 @@ const GLYPH_P: [&str; 7] = [
     "11110", "10001", "10001", "11110", "10000", "10000", "10000",
 ];
 
-fn draw_glyph(img: &mut RgbaImage, glyph: &[&str; 7], ox: u32, oy: u32, scale: u32, color: Rgba<u8>) {
+fn draw_glyph(
+    img: &mut RgbaImage,
+    glyph: &[&str; 7],
+    ox: u32,
+    oy: u32,
+    scale: u32,
+    color: Rgba<u8>,
+) {
     for (row, line) in glyph.iter().enumerate() {
         for (col, ch) in line.chars().enumerate() {
             if ch == '1' {
@@ -73,8 +80,33 @@ fn main() {
     let white = Rgba([255, 255, 255, 255]);
     draw_glyph(&mut img, &GLYPH_T, ox, oy, scale, white);
     draw_glyph(&mut img, &GLYPH_O, ox + glyph_w + gap, oy, scale, white);
-    draw_glyph(&mut img, &GLYPH_P, ox + 2 * (glyph_w + gap), oy, scale, white);
+    draw_glyph(
+        &mut img,
+        &GLYPH_P,
+        ox + 2 * (glyph_w + gap),
+        oy,
+        scale,
+        white,
+    );
 
     img.save(&out_path).expect("failed to write top_marker.png");
+
+    // Also place a copy next to the built executable. Bevy resolves its
+    // asset root from `CARGO_MANIFEST_DIR` when the binary is launched by
+    // Cargo, but falls back to the executable's own directory otherwise --
+    // so without this copy, `target/release/m0-1-skinned-mesh.exe` started
+    // directly renders an untextured quad and the TOP-orientation check
+    // (the whole point of this spike) silently cannot be performed.
+    //
+    // OUT_DIR is `<target>/<profile>/build/<pkg>-<hash>/out`; three levels
+    // up is the profile directory holding the executable.
+    let out_dir_env = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    if let Some(profile_dir) = Path::new(&out_dir_env).ancestors().nth(3) {
+        let exe_assets = profile_dir.join("assets");
+        if std::fs::create_dir_all(&exe_assets).is_ok() {
+            let _ = std::fs::copy(&out_path, exe_assets.join("top_marker.png"));
+        }
+    }
+
     println!("cargo:rerun-if-changed=build.rs");
 }
