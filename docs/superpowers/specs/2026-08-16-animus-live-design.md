@@ -465,23 +465,39 @@ pub fn build_skinned_mesh(mp: &MeshPuppet, ppu: f32, pivot: Vec2) -> Result<Mesh
 ```
 
 **Limits enforced in `validate()` with a user-facing message, never a panic:**
-- ≤ **256 joints per puppet** (Bevy `MAX_JOINTS`). We target 10–60. If a user ever exceeds it, the bounded workaround is splitting into two skinned meshes sharing one solver.
+- ≤ **256 bones per puppet** — Bevy's `MAX_JOINTS` counts entries in `SkinnedMesh.joints`, and per §7.3 those are our bones. We target 10–60. If a user ever exceeds it, the bounded workaround is splitting into two skinned meshes sharing one solver.
 - ≤ **4 influences per vertex** on the GPU. Authored attachments may exceed 4; `bake_influences` takes the top 4 by weight, renormalizes, and reports the maximum dropped mass so the UI can warn "vertex 812 lost 18% of its influence".
 - A mesh carrying `ATTRIBUTE_JOINT_INDEX` **without** a `SkinnedMesh` component panics at render time (bevy#22469). The sync system must spawn both in the same `commands` batch, never across frames.
 
-### 7.3 Bind poses and the flat joint set
+### 7.3 Bind poses — the skinning palette is per BONE, not per joint
 
-Bevy skinning computes `Σ_j w_j · (GlobalTransform_j · inverse_bindpose_j) · v`. It reads joint entities' **global** transforms and never inspects parentage. A flat joint list with no `ChildOf` is exactly what Animata's spring-graph skeleton needs.
+Bevy skinning computes `Σ_j w_j · (GlobalTransform_j · inverse_bindpose_j) · v`. It reads the entities in `SkinnedMesh.joints` by their **global** transforms and never inspects parentage, so a flat list with no `ChildOf` between them is exactly what Animata's spring-graph skeleton needs.
+
+**The entities in that list are our `Bone`s, not our `Joint`s.** This is the point most likely to be got wrong, so it is worth stating plainly:
+
+- A `Joint` is a point mass. It has a position and no meaningful orientation of its own — in a spring graph, nothing defines which way a joint "faces".
+- A `Bone` spans two joints and therefore *does* have a frame: origin at joint A, X axis along A→B, Y perpendicular. That frame is what rotates when a limb swings.
+- `Attachment.local` is already recorded in the **bone's** frame (§4.3). Linear blend skinning over bone frames is exactly Animata's vertex blend.
+
+So the mapping is: **one skinning entity per bone.** Consequently **Bevy's `MAX_JOINTS = 256` limits bones per puppet**, not joints — which is the number `validate()` and `bake_influences` must check.
 
 ```rust
+// Bind transform of BONE b in puppet-local space at rest.
+let a = img_to_world(joints[bone.a].rest, pivot, ppu).truncate();
+let b = img_to_world(joints[bone.b].rest, pivot, ppu).truncate();
+let dir = b - a;
 let bind = Mat4::from_rotation_translation(
-    Quat::from_rotation_z(-joint.rest_angle),
-    img_to_world(joint.rest, pivot, ppu),
+    Quat::from_rotation_z(dir.y.atan2(dir.x)),
+    a.extend(0.0),
 );
 inverse_bindposes.push(bind.inverse());
 ```
 
-Joint entities are spawned as **children of the puppet root** (so layer transforms move the whole puppet for free) but are **siblings of each other**. The solver writes joint `Transform` in puppet-local space; `TransformSystems::Propagate` composes the root transform in.
+Each frame the solver produces joint positions; a writeback system derives each bone entity's `Transform` from its two joints the same way — translation at A, Z rotation from the A→B direction. `length_mul` squash/stretch appears as a scale along the bone's local X.
+
+`Joint::rest_angle` therefore plays no part in skinning. It is retained only so a joint can carry an authored orientation for future tools (IK hints, driven rotations); if it is still unused at 1.0, remove it.
+
+Bone entities are spawned as **children of the puppet root** (so layer transforms move the whole puppet for free) but are **siblings of each other**. The solver writes them in puppet-local space; `TransformSystems::Propagate` composes the root transform in.
 
 ### 7.4 Material and depth ordering
 
