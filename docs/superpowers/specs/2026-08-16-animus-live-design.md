@@ -1060,9 +1060,19 @@ needed, it is a separate optional process speaking OSC, never a linked dependenc
 Not a DAW timeline. A linear arrangement track is the less useful half for live work,
 and building it first would produce a worse Ableton than Ableton. The shape is a
 **clip launcher** — a grid of named clips with triggers, fired live and quantised to
-the beat — with an optional ordered **cue list** for shows that run to a script. That
-ordering matches how the same operator already works in Showmesh, where the cue list
-is the spine and everything else serves it.
+the beat.
+
+**Decided 2026-08-17: the clip launcher is the whole of it for now.** No linear
+timeline, no arrangement view. If a scripted show ever needs one, the ordered cue list
+is the shape to add, matching how the same operator already works in Showmesh — but it
+is not being built on speculation.
+
+**Left open, deliberately:** whether recording a performed take is the primary
+authoring path or whether keyframes are wanted from the start. The user does not know
+yet, and it is the kind of question that answers itself the first time someone tries to
+make a puppet do something specific. Build recording first — it is nearly free given
+that performed drags already write into `TargetValues` — and let the answer come from
+using it.
 
 #### Milestone
 
