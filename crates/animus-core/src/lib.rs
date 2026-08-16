@@ -9,5 +9,6 @@ pub mod ids;
 pub mod mesh;
 pub mod remap;
 pub mod silhouette;
+pub mod skeleton;
 pub mod solver;
 pub mod triangulate;

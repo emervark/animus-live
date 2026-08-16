@@ -1,0 +1,134 @@
+//! Baking the authored, unbounded [`AttachmentTable`] down into the fixed
+//! 4-influence palette the GPU skinning pipeline consumes. See spec §7.2.
+
+use crate::doc::AttachmentTable;
+use crate::solver::CompiledRig;
+use std::cmp::Ordering;
+
+/// Bevy's `MAX_JOINTS`: the maximum number of skinning-palette entries per
+/// mesh. In Animus Live those entries are **bones**, not `Joint`s (see the
+/// `skeleton` module doc) — so this bounds bones per puppet.
+pub const MAX_SKIN_BONES: usize = 256;
+
+/// GPU vertex attributes carry exactly four influences per vertex.
+pub const MAX_INFLUENCES: usize = 4;
+
+/// The fixed-size GPU skinning palette baked from an [`AttachmentTable`]:
+/// each vertex's top four influences, renormalized to sum to 1.0.
+///
+/// **Naming note — read this before touching either field.** `joint_index`
+/// is named to match Bevy's `Mesh::ATTRIBUTE_JOINT_INDEX`, which it feeds
+/// directly, and Bevy's skinning palette calls its entries "joints". But
+/// the values stored here are **bone indices into [`CompiledRig`]**, not
+/// indices into this crate's `Joint` type. A `Joint` is an unoriented
+/// point mass in the spring graph; a `Bone` spans two joints and has the
+/// A→B rest frame that `Attachment::local` is recorded in and that
+/// skinning actually rotates. `MAX_SKIN_BONES` is a limit on bones, not
+/// joints, for the same reason.
+#[derive(Debug, Clone)]
+pub struct BakedInfluences {
+    /// Per vertex, up to four **bone** indices into `CompiledRig`. Unused
+    /// slots (when a vertex has fewer than four influences) are padded
+    /// with index 0 and weight 0.0.
+    pub joint_index: Vec<[u16; 4]>,
+    /// Per vertex, the weight for each corresponding `joint_index` entry.
+    /// Sums to 1.0 for any vertex with at least one influence.
+    pub joint_weight: Vec<[f32; 4]>,
+    /// The largest fraction of any single vertex's authored weight that
+    /// was dropped by keeping only its top four influences, across all
+    /// vertices. 0.0 if no vertex had more than four attachments. Surface
+    /// this to the artist ("vertex 812 lost 18% of its influence") rather
+    /// than silently discarding it.
+    pub max_dropped_mass: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum BakeError {
+    /// The rig has more bones than Bevy's `MAX_JOINTS` skinning-palette
+    /// limit. Reported here, before the renderer would panic on it.
+    #[error("rig has {count} bones, exceeding the {max}-bone skinning limit")]
+    TooManyBones { count: usize, max: usize },
+}
+
+/// Bakes `att` against `rig`'s bones into a fixed 4-influence-per-vertex
+/// GPU palette, for a mesh of `vertex_count` vertices.
+///
+/// Each vertex's influences are sorted by weight descending, with **bone
+/// index ascending as the tie-break** — required for the bake to be
+/// deterministic when two bones tie on weight, since an arbitrary tie
+/// order would let the top-4 selection (and therefore the baked mesh)
+/// change between otherwise-identical runs. The top four survive and are
+/// renormalized to sum to 1.0; a vertex with no attachments at all bakes
+/// to all-zero indices and weights rather than panicking.
+///
+/// Returns `Err(BakeError::TooManyBones)` if `rig` has more than
+/// `MAX_SKIN_BONES` bones.
+pub fn bake_influences(
+    att: &AttachmentTable,
+    rig: &CompiledRig,
+    vertex_count: usize,
+) -> Result<BakedInfluences, BakeError> {
+    let bone_count = rig.bone_a.len();
+    if bone_count > MAX_SKIN_BONES {
+        return Err(BakeError::TooManyBones {
+            count: bone_count,
+            max: MAX_SKIN_BONES,
+        });
+    }
+
+    let mut per_vertex: Vec<Vec<(u32, f32)>> = vec![Vec::new(); vertex_count];
+    for entry in &att.entries {
+        let vertex = entry.vertex as usize;
+        if vertex >= vertex_count {
+            continue;
+        }
+        let bone_index = entry.bone.0 as usize;
+        if bone_index >= bone_count {
+            continue;
+        }
+        per_vertex[vertex].push((bone_index as u32, entry.weight));
+    }
+
+    let mut joint_index = Vec::with_capacity(vertex_count);
+    let mut joint_weight = Vec::with_capacity(vertex_count);
+    let mut max_dropped_mass: f32 = 0.0;
+
+    for mut influences in per_vertex {
+        influences.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+
+        let total: f32 = influences.iter().map(|(_, w)| w).sum();
+        influences.truncate(MAX_INFLUENCES);
+        let kept_sum: f32 = influences.iter().map(|(_, w)| w).sum();
+
+        if total > 0.0 {
+            let dropped = (total - kept_sum) / total;
+            if dropped > max_dropped_mass {
+                max_dropped_mass = dropped;
+            }
+        }
+
+        let mut idx = [0u16; MAX_INFLUENCES];
+        let mut wt = [0.0f32; MAX_INFLUENCES];
+        for (slot, (bone_index, weight)) in influences.iter().enumerate() {
+            idx[slot] = *bone_index as u16;
+            wt[slot] = if kept_sum > 0.0 {
+                weight / kept_sum
+            } else {
+                0.0
+            };
+        }
+
+        joint_index.push(idx);
+        joint_weight.push(wt);
+    }
+
+    Ok(BakedInfluences {
+        joint_index,
+        joint_weight,
+        max_dropped_mass,
+    })
+}
