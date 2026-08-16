@@ -1,0 +1,29 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Cargo.lock IS committed — this is an application, not a library.
+# (see docs/superpowers/specs/2026-08-16-animus-live-design.md §15.2)
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Build & release artifacts
+/dist/
+/out/
+*.zip
+*.msi
+*.exe
+
+# Local scratch
+/scratch/
+/spikes/**/target/
+
+# Test output
+/tests/output/
+**/snapshots/*.snap.new
