@@ -192,6 +192,39 @@ mod tests {
     }
 
     #[test]
+    fn local_coords_are_correct_for_a_non_axis_aligned_bone() {
+        // Every other frame test above uses a bone along +X, where the
+        // local frame happens to be the identity — so a swapped or
+        // sign-flipped `y_axis` in `auto_attach` would pass every one of
+        // them. This bone runs at 45 degrees (joint A at (0,0), joint B
+        // at (10,10)), where getting the perpendicular axis wrong is
+        // observable: it would deform a limb mirrored rather than
+        // rotated, which would not show up until a puppet was on a
+        // projector.
+        let mesh = MeshData {
+            positions: vec![Vec2::new(10.0, 0.0)],
+            ..Default::default()
+        };
+        let mut skel = SkeletonData::default();
+        skel.joints
+            .insert(JointId(1), joint(1, Vec2::new(0.0, 0.0)));
+        skel.joints
+            .insert(JointId(2), joint(2, Vec2::new(10.0, 10.0)));
+        skel.bones.insert(BoneId(1), bone(1, 1, 2, 30.0));
+
+        let t = auto_attach(&mesh, &skel);
+        assert_eq!(t.entries.len(), 1);
+
+        // x_axis = (1,1)/sqrt(2), y_axis = (-1,1)/sqrt(2) (perpendicular,
+        // rotated +90 degrees from x_axis); rel = vertex - a = (10,0).
+        // local = (rel . x_axis, rel . y_axis).
+        let expected_x = 10.0 * std::f32::consts::FRAC_1_SQRT_2;
+        let expected_y = -10.0 * std::f32::consts::FRAC_1_SQRT_2;
+        assert_relative_eq!(t.entries[0].local.x, expected_x, epsilon = 1e-4);
+        assert_relative_eq!(t.entries[0].local.y, expected_y, epsilon = 1e-4);
+    }
+
+    #[test]
     fn bake_keeps_the_top_four_influences_and_renormalizes() {
         let (rig, bone_ids) = rig_with_bones(5);
         let att = attachments_for_one_vertex(&[0.5, 0.3, 0.1, 0.05, 0.05], &bone_ids);
