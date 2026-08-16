@@ -125,7 +125,9 @@ output    ← app
 editor    ← app
 ```
 
-`animus-core` depends on `glam`, `serde`, `spade`, `i_overlay`, `thiserror` and nothing else. `glam` is exactly the type Bevy uses (`Vec2`/`Vec3`/`Mat4` are re-exports), so core types cross into Bevy at zero cost with no conversion layer.
+`animus-core` depends on `glam`, `serde`, `serde_json`, `indexmap`, `thiserror`, `tracing`, `spade`, `i_overlay`, `image` and `imageproc` — and, deliberately, nothing that pulls an engine, a GPU API, or a windowing layer. `glam` is exactly the type Bevy uses (`Vec2`/`Vec3`/`Mat4` are re-exports), so core types cross into Bevy at zero cost with no conversion layer.
+
+Two of those earn a note. `serde_json` is a real dependency rather than a dev one, because `Project.bindings` holds raw `serde_json::Value` until the typed `Binding` lands in the signal-bus milestone, and because migrations operate on raw JSON before typed construction. `imageproc` is used for exactly three items — `distance_transform::Norm` and `morphology::{dilate_mut, erode_mut}` — and **must be declared `default-features = false`**: its defaults pull a font renderer (`ab_glyph`/`ttf-parser`), an FFT, rayon, and `image/default`, and that last one defeats our own `image` feature narrowing through feature unification, dragging the AVIF and OpenEXR codec stacks into a build that only ever opens PNGs. The `cargo deny` job catches this if it regresses.
 
 **Enforced in CI:** `cargo tree -p animus-core | grep -q bevy` must *fail*. The architectural invariant is a test.
 
