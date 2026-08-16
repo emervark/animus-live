@@ -46,7 +46,7 @@ enum Event {
 /// polygon with no duplicated first/last point, in unspecified (not
 /// necessarily consistent) winding — [`crate::silhouette::topology`]
 /// normalizes winding afterwards.
-pub fn trace_rings(mask: &GrayImage, threshold: u8) -> Vec<Vec<Vec2>> {
+pub(super) fn trace_rings(mask: &GrayImage, threshold: u8) -> Vec<Vec<Vec2>> {
     let (w, h) = mask.dimensions();
     let inside = |x: i64, y: i64| -> u8 {
         if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {

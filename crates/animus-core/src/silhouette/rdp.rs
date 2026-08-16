@@ -51,7 +51,7 @@ fn rdp_open(points: &[Vec2], epsilon: f32) -> Vec<Vec2> {
 /// each half independently, and stitches the results back into a closed
 /// ring. The split points are geometric properties of the ring's shape, not
 /// of its array order, so the result is start-index-independent.
-pub fn simplify_closed_ring(ring: &[Vec2], epsilon: f32) -> Vec<Vec2> {
+pub(super) fn simplify_closed_ring(ring: &[Vec2], epsilon: f32) -> Vec<Vec2> {
     let n = ring.len();
     if n < 4 {
         return ring.to_vec();

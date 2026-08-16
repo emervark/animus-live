@@ -48,6 +48,29 @@ fn point_in_polygon(p: Vec2, poly: &[Vec2]) -> bool {
     inside
 }
 
+/// A point guaranteed to be strictly interior to `ring` (not just one of
+/// its vertices, which can sit exactly on another ring's edge and make
+/// point-in-polygon results for *that* other ring undefined).
+///
+/// Uses the centroid of the first non-degenerate triangle fanned from
+/// `ring[0]` — cheap, and for any simple polygon with at least 3 non
+/// collinear points in a row, that centroid is strictly inside the
+/// triangle and (for a simple polygon) strictly inside the polygon too.
+fn interior_point(ring: &[Vec2]) -> Vec2 {
+    let n = ring.len();
+    for i in 1..n.saturating_sub(1) {
+        let (a, b, c) = (ring[0], ring[i], ring[i + 1]);
+        let cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if cross.abs() > f32::EPSILON {
+            return (a + b + c) / 3.0;
+        }
+    }
+    // Degenerate (collinear) ring: fall back to the first vertex. This
+    // can't happen for anything that survived the min-area filter, but
+    // never panic here.
+    ring.first().copied().unwrap_or(Vec2::ZERO)
+}
+
 /// Runs a single contour through `i_overlay`'s self-union (a shape unioned
 /// with itself under a non-zero fill rule) to remove self-intersections
 /// that RDP's line-simplification can introduce. If the union yields
@@ -82,8 +105,13 @@ fn self_union_largest(points: &[Vec2]) -> Vec<Vec2> {
 ///
 /// Follows the brief's pipeline order:
 /// 1. Drop rings below `min_area`.
-/// 2. Classify each remaining ring as a hole if it's contained inside
-///    another candidate (point-in-polygon test of one of its points).
+/// 2. Classify each remaining ring by containment-depth *parity*: count how
+///    many other candidate rings contain it (via a point known to be
+///    strictly interior to it, not just one of its vertices), and take the
+///    parity of that count — even means outer, odd means hole. A single
+///    "contained in anything => hole" check is wrong past one level of
+///    nesting: an island sitting inside a hole inside an outer body is
+///    contained in *two* rings, and must come back as outer, not a hole.
 /// 3. Normalize winding to the convention documented on [`signed_area`].
 /// 4. Run each ring through self-union to remove self-intersections.
 /// 5. Sort: outer rings first (descending area), then holes.
@@ -92,24 +120,20 @@ fn self_union_largest(points: &[Vec2]) -> Vec<Vec2> {
 /// well: `i_overlay` is free to return its own canonical orientation for a
 /// shape's outer contour, which need not match the orientation this crate
 /// picked in step 3.
-pub fn build_rings(raw: Vec<Vec<Vec2>>, min_area: f32) -> Vec<Ring> {
+pub(super) fn build_rings(raw: Vec<Vec<Vec2>>, min_area: f32) -> Vec<Ring> {
     let candidates: Vec<Vec<Vec2>> = raw
         .into_iter()
         .filter(|r| signed_area(r).abs() >= min_area)
         .collect();
 
     let n = candidates.len();
+    let interior: Vec<Vec2> = candidates.iter().map(|c| interior_point(c)).collect();
     let mut is_hole = vec![false; n];
     for i in 0..n {
-        for (j, cand) in candidates.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            if point_in_polygon(candidates[i][0], cand) {
-                is_hole[i] = true;
-                break;
-            }
-        }
+        let depth = (0..n)
+            .filter(|&j| j != i && point_in_polygon(interior[i], &candidates[j]))
+            .count();
+        is_hole[i] = depth % 2 == 1;
     }
 
     let mut rings: Vec<Ring> = Vec::with_capacity(n);

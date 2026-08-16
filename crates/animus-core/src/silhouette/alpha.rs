@@ -5,7 +5,7 @@ use imageproc::distance_transform::Norm;
 use imageproc::morphology::{dilate_mut, erode_mut};
 
 /// Builds a binary mask: 255 where `rgba.a >= threshold`, 0 otherwise.
-pub fn alpha_mask(img: &RgbaImage, threshold: u8) -> GrayImage {
+pub(super) fn alpha_mask(img: &RgbaImage, threshold: u8) -> GrayImage {
     GrayImage::from_fn(img.width(), img.height(), |x, y| {
         let a = img.get_pixel(x, y).0[3];
         Luma([if a >= threshold { 255 } else { 0 }])
@@ -20,7 +20,7 @@ pub fn alpha_mask(img: &RgbaImage, threshold: u8) -> GrayImage {
 /// puppet); getting this backwards is a real bug, not a style choice.
 ///
 /// A no-op when `radius == 0`, so callers can disable the pass entirely.
-pub fn close_mask(mask: &GrayImage, radius: u32) -> GrayImage {
+pub(super) fn close_mask(mask: &GrayImage, radius: u32) -> GrayImage {
     if radius == 0 {
         return mask.clone();
     }

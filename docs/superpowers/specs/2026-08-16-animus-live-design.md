@@ -407,7 +407,11 @@ A file with a newer `schema_version` than the reader is refused with a clear mes
 2. **Dilate-then-erode closing** at `close_radius` — this is the cheap fix for anti-aliased-edge speckle and is not optional.
 3. Marching squares → closed rings. Written in-house (~150 lines); the `contour` crate is stale (Apr 2024) and we need control over closing, hole classification and winding anyway.
 4. Ramer–Douglas–Peucker simplification at `rdp_epsilon_px`.
-5. Classify rings: largest by area = outer boundary; contained rings = holes. Normalize winding.
+5. Classify rings by **parity of containment depth**: for each ring, count how many other rings contain it; even means an outer boundary, odd means a hole. Normalize winding — outer rings CCW, holes CW, under the plain unflipped shoelace formula in Y-down image space.
+
+   **Not "contained in any other ring".** That simpler rule is wrong at three levels of nesting: an island inside a hole is contained by both the hole and the outer boundary, and would be misclassified as a hole. A donut with a dot in the middle, a face with a tooth visible inside an open mouth, an eye outline with a pupil — these are ordinary character-art shapes, and under the naive rule the innermost feature silently disappears with nothing in the UI to explain why. Parity costs about five lines.
+
+   The containment test must use a point **strictly interior** to the ring (the centroid of its first non-degenerate triangle), not an arbitrary ring vertex: a vertex lying exactly on another ring's edge gives an undefined point-in-polygon result and flips the classification arbitrarily.
 6. Drop regions below `min_region_area_px`.
 
 ### 6.2 Triangulation — `spade` CDT

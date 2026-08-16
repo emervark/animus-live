@@ -120,6 +120,41 @@ mod tests {
     }
 
     #[test]
+    fn three_levels_of_nesting_classify_by_containment_depth_parity() {
+        // Outer circle -> hole -> innermost island. The innermost island is
+        // contained in *two* rings (the outer body and the hole), so a
+        // single-level "contained in anything => hole" rule misclassifies
+        // it as a hole. The correct rule is containment-depth parity: even
+        // depth (0, the outer body; 2, the island) is outer, odd depth (1,
+        // the hole) is a hole.
+        let rings = extract(&load("nested_island.png"), &params()).unwrap();
+        assert_eq!(
+            rings.iter().filter(|r| !r.is_hole).count(),
+            2,
+            "outer body + innermost island"
+        );
+        assert_eq!(
+            rings.iter().filter(|r| r.is_hole).count(),
+            1,
+            "the ring around the hole"
+        );
+
+        let innermost = rings
+            .iter()
+            .min_by(|a, b| {
+                signed_area(&a.points)
+                    .abs()
+                    .partial_cmp(&signed_area(&b.points).abs())
+                    .unwrap()
+            })
+            .unwrap();
+        assert!(
+            !innermost.is_hole,
+            "the smallest ring is the island, which must be outer, not a hole"
+        );
+    }
+
+    #[test]
     fn a_fully_opaque_image_gives_a_ring_around_the_whole_frame() {
         let rings = extract(&load("fully_opaque.png"), &params()).unwrap();
         assert_eq!(rings.len(), 1);

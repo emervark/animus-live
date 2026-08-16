@@ -140,4 +140,37 @@ fn generate_fixtures() {
         }
     }
     save(&aa, "antialiased_edge.png");
+
+    // nested_island.png: three levels of nesting — a filled circle, a
+    // concentric transparent hole inside it, and a smaller filled circle
+    // (an "island") inside that hole. Exercises hole classification beyond
+    // a single level: the innermost circle must come back as an outer
+    // ring, not a hole, even though it's contained in both the outer ring
+    // and the hole ring.
+    let mut nested = RgbaImage::new(200, 200);
+    let (hole_r, island_r) = (35.0f32, 12.0f32);
+    for y in 0..200 {
+        for x in 0..200 {
+            let dx = x as f32 + 0.5 - cx;
+            let dy = y as f32 + 0.5 - cy;
+            let d = (dx * dx + dy * dy).sqrt();
+            let inside = if d <= island_r {
+                true // innermost island: filled again
+            } else if d <= hole_r {
+                false // hole: transparent
+            } else {
+                d <= r // outer body: filled
+            };
+            nested.put_pixel(
+                x,
+                y,
+                if inside {
+                    Rgba([255, 255, 255, 255])
+                } else {
+                    Rgba([0, 0, 0, 0])
+                },
+            );
+        }
+    }
+    save(&nested, "nested_island.png");
 }
