@@ -14,8 +14,10 @@ pub struct Puppet {
 
 // `MeshPuppet` is meaningfully larger than `ModelPuppet` (it inlines the
 // whole mesh/skeleton/attachment tables), but boxing it would change the
-// shape later tasks match on for no real benefit — puppets are a handful
-// per project, not a hot per-vertex allocation.
+// shape later tasks match on for no real benefit: `Puppet` values live in
+// `Project::puppets`, an `IndexMap` with tens of entries, not a hot
+// contiguous buffer, so the size difference is never a per-frame cost.
+// Revisit this allow if `PuppetKind` is ever stored in a large flat array.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]

@@ -14,8 +14,8 @@ mod stage;
 pub use asset::{AssetKind, AssetRef};
 pub use layer::{BlendMode, Layer, Transform2Or3};
 pub use mesh_puppet::{
-    Attachment, AttachmentTable, AutoMeshMode, AutoMeshParams, Bone, Joint, MaterialCfg, MeshData,
-    MeshPuppet, MeshSource, SkeletonData,
+    AlphaModeCfg, Attachment, AttachmentTable, AutoMeshMode, AutoMeshParams, Bone, Joint,
+    MaterialCfg, MeshData, MeshPuppet, MeshSource, SkeletonData,
 };
 pub use model_puppet::{DrivenJoint, ModelPuppet};
 pub use puppet::{Puppet, PuppetKind};
@@ -176,5 +176,54 @@ mod tests {
         }"#;
         let p: Project = serde_json::from_str(json).expect("must not reject unknown fields");
         assert_eq!(p.meta.name, "X");
+    }
+
+    /// The types this task designed itself (spec §4.3 defers their shape to
+    /// implementation) have no test in the brief. This one constructs and
+    /// JSON-round-trips each of them using only names reachable through
+    /// `super::*` — i.e. `doc`'s public re-export surface, exactly what an
+    /// external crate sees. It's a reachability check as much as a
+    /// round-trip check: a type that's `pub` inside a privately-declared
+    /// submodule but missing from `doc::mod`'s `pub use` list would fail to
+    /// resolve here, the way `AlphaModeCfg` originally did.
+    #[test]
+    fn self_designed_helper_types_round_trip_through_json() {
+        let material = MaterialCfg {
+            tint: [1.0, 0.5, 0.25, 1.0],
+            alpha_mode: AlphaModeCfg::Mask,
+        };
+        let back: MaterialCfg =
+            serde_json::from_str(&serde_json::to_string(&material).unwrap()).unwrap();
+        assert_eq!(back.alpha_mode, AlphaModeCfg::Mask);
+
+        let flat = Transform2Or3::Flat {
+            translation: glam::Vec2::new(1.0, 2.0),
+            rotation: 0.5,
+            scale: glam::Vec2::ONE,
+        };
+        let back: Transform2Or3 =
+            serde_json::from_str(&serde_json::to_string(&flat).unwrap()).unwrap();
+        assert!(matches!(back, Transform2Or3::Flat { .. }));
+
+        let spatial = Transform2Or3::Spatial {
+            translation: glam::Vec3::ZERO,
+            rotation: glam::Quat::IDENTITY,
+            scale: glam::Vec3::ONE,
+        };
+        let back: Transform2Or3 =
+            serde_json::from_str(&serde_json::to_string(&spatial).unwrap()).unwrap();
+        assert!(matches!(back, Transform2Or3::Spatial { .. }));
+
+        let driven = DrivenJoint {
+            node_name: "jaw".into(),
+            channel: "mouth_open".into(),
+        };
+        let back: DrivenJoint =
+            serde_json::from_str(&serde_json::to_string(&driven).unwrap()).unwrap();
+        assert_eq!(back.node_name, "jaw");
+
+        let kind = AssetKind::Gltf;
+        let back: AssetKind = serde_json::from_str(&serde_json::to_string(&kind).unwrap()).unwrap();
+        assert_eq!(back, AssetKind::Gltf);
     }
 }
