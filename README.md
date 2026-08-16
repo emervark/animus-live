@@ -11,6 +11,12 @@ Animus Live is a real-time puppet animation tool for live performance.
 
 See `docs/heritage.md` for the project's relationship to the original Animata, and `CONTRIBUTING.md` before opening a pull request.
 
+The on-disk project format is specified independently of this code, in
+[`spec/animus-project-format-v1.md`](spec/animus-project-format-v1.md), and
+released under CC0-1.0 ([`spec/LICENSE`](spec/LICENSE)) — so anyone can
+implement a reader or writer for `.animus` projects without legal
+analysis, license negotiation, or reading this repository's Rust.
+
 ## Building
 
 ```bash

@@ -1,0 +1,37 @@
+CC0 1.0 Universal (CC0 1.0) Public Domain Dedication
+
+The Animus Live project file format specification — everything in this
+`spec/` directory, including the prose, the JSON schema, and the fixture
+files — is dedicated to the public domain under CC0 1.0 Universal.
+
+To the extent possible under law, the Animus Live contributors have waived
+all copyright and related or neighboring rights to this specification. You
+may copy, modify, distribute and use it, including for commercial purposes,
+all without asking permission.
+
+The full legal code is available at:
+
+    https://creativecommons.org/publicdomain/zero/1.0/legalcode
+
+A human-readable summary is at:
+
+    https://creativecommons.org/publicdomain/zero/1.0/
+
+THE SPECIFICATION IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+---
+
+Why this is CC0 and the rest of the project is not:
+
+The Animus Live application source is licensed MIT OR Apache-2.0. The file
+format is deliberately separated and placed in the public domain so that
+anyone can implement a reader or writer for `.animus` projects with zero
+legal analysis and no obligation to this project — including in proprietary
+software, and including in a competing tool.
+
+A creative tool's project format is the user's data, not the vendor's. A
+performer's show should outlive the program that made it.
+
+The reference implementation of this format lives in the `animus-core` and
+`animus-project` crates and remains MIT OR Apache-2.0, so implementers may
+also simply vendor the Rust code rather than working from the prose.
