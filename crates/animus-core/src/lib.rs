@@ -10,3 +10,4 @@ pub mod mesh;
 pub mod remap;
 pub mod silhouette;
 pub mod solver;
+pub mod triangulate;
