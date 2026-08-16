@@ -25,12 +25,11 @@ tracing     = "0.1"
 # --- geometry ---
 spade       = "2.15"
 i_overlay   = "8.1"
-imageproc   = "0.27"
+imageproc   = { version = "0.27", default-features = false }
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # --- project io ---
 sha2        = "0.10"
-zip         = "5"
 tempfile    = "3"
 
 # --- testing ---
