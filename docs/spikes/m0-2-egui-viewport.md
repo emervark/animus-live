@@ -372,3 +372,17 @@ tested on a single-monitor machine. Re-check those before the first show.
 
 A flag was added so this comparison can be repeated:
 `--no-resize-debounce` drops both the stability wait and the 2px deadzone.
+
+## Deferred, not dropped
+
+Spec §18 sets M0-2's bar at "click accuracy verified at 3 zoom levels and 2
+DPI scales". What was actually verified: **125% scaling at 1x zoom, 1.12px**,
+plus a by-eye check that zooming introduced no drift. The systematic matrix —
+100% / 125% / 150% against 1x / 2x / 4x — was **not** recorded.
+
+Judged sufficient for now (2026-08-17) and deliberately deferred: the DPI code
+path is proven to work at a non-unity scale factor, which is what a misplaced
+`pixels_per_point()` multiply would break. The remaining matrix would confirm,
+not discover. **Re-run it when a second display or a different scaling setting
+is in front of the machine anyway** — and before 1.0, since a per-monitor DPI
+change is one of the venue scenarios in the resize section above.

@@ -376,3 +376,21 @@ unexplained: the rerun puts the worst frame at index 2. Startup, not drift.
 **Caveat:** this run was passive. The checklist asks for the same run *while
 actively dragging and interacting with the editor window*, which no automated
 run can supply here.
+
+## Deferred, not dropped
+
+Spec §18 sets M0-4's bar at "10 minutes at a stable 60 fps on the output while
+the editor is in use". Neither half was met literally:
+
+- **60 fps was unobtainable on this display.** The only second screen
+  available was a hotel TV at 4K/30Hz, where 60 fps is impossible with vsync
+  on. What was measured is the achievable equivalent: ten minutes locked to
+  the display's own interval (p50 exactly 33.333 ms), no drift, no errors.
+- **The editor was not in use** during the run; it was passive.
+
+Judged sufficient for now (2026-08-17) and deliberately deferred. The
+mechanism is fully understood — the application's frame rate is set by the
+slowest vsync-enabled window, measured across four configurations — so the
+remaining run would confirm rather than discover. **Re-run at 1080p60 or on a
+real projector, with the editor actively being dragged**, before the first
+show.
