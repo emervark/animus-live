@@ -1,0 +1,15 @@
+[package]
+name = "m0-3-spout"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+bevy      = "=0.19.1"
+spout2-rs = { version = "0.1.1", features = ["dx12"] }
+wgpu-hal  = { version = "=29.0.3", features = ["dx12"] }
+# Must match wgpu-hal's exact `windows` version -- confirmed via
+# `cargo tree -p wgpu-hal -i windows` == 0.62.2. If a different `windows`
+# crate is linked, `ID3D12Resource` from this crate and from wgpu-hal's
+# `windows` are nominally distinct types and will not unify.
+windows   = { version = "=0.62.2", features = ["Win32_Graphics_Direct3D12"] }
