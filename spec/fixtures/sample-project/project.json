@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "name": "Fixture Puppet Show",
+    "created_by": "animus 0.1.0",
+    "created_utc": "2026-08-16T00:00:00Z",
+    "modified_utc": "2026-08-16T00:00:00Z"
+  },
+  "next_id": 8,
+  "assets": {
+    "1": {
+      "id": 1,
+      "sha256": "7c2e80ee8a97dda67d6ef4d4b2dc1476fbba9e40b7b77ad74eb618cd9f9fcf80",
+      "kind": "image",
+      "original_name": "hero-source.png",
+      "byte_len": 39,
+      "width": null,
+      "height": null
+    }
+  },
+  "layers": [
+    6,
+    7
+  ],
+  "layer_data": {
+    "6": {
+      "id": 6,
+      "name": "Background",
+      "visible": true,
+      "opacity": 1.0,
+      "blend": "normal",
+      "depth": -10.0,
+      "transform": {
+        "flat": {
+          "translation": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "contents": []
+    },
+    "7": {
+      "id": 7,
+      "name": "Hero",
+      "visible": true,
+      "opacity": 1.0,
+      "blend": "normal",
+      "depth": 0.0,
+      "transform": {
+        "spatial": {
+          "translation": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rotation": [
+            0.0,
+            0.0,
+            0.0,
+            1.0
+          ],
+          "scale": [
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "contents": [
+        5
+      ]
+    }
+  },
+  "puppets": {
+    "5": {
+      "id": 5,
+      "name": "Hero",
+      "kind": {
+        "type": "mesh",
+        "texture": 1,
+        "mesh": {
+          "positions": [
+            [
+              80.0,
+              100.0
+            ],
+            [
+              120.0,
+              100.0
+            ],
+            [
+              100.0,
+              400.0
+            ]
+          ],
+          "uvs": [
+            [
+              0.4,
+              0.0
+            ],
+            [
+              0.6,
+              0.0
+            ],
+            [
+              0.5,
+              1.0
+            ]
+          ],
+          "triangles": [
+            0,
+            1,
+            2
+          ],
+          "source": {
+            "auto": {
+              "alpha_threshold": 16,
+              "close_radius": 2,
+              "rdp_epsilon_px": 1.5,
+              "min_region_area_px": 24.0,
+              "interior_spacing_px": 20.0,
+              "mode": "silhouette"
+            }
+          }
+        },
+        "skeleton": {
+          "joints": {
+            "2": {
+              "id": 2,
+              "name": "root",
+              "rest": [
+                100.0,
+                400.0
+              ],
+              "rest_angle": 0.0,
+              "inv_mass": 0.0,
+              "pinned": true
+            },
+            "3": {
+              "id": 3,
+              "name": "tip",
+              "rest": [
+                100.0,
+                100.0
+              ],
+              "rest_angle": 0.0,
+              "inv_mass": 1.0,
+              "pinned": false
+            }
+          },
+          "bones": {
+            "4": {
+              "id": 4,
+              "name": "spine",
+              "a": 2,
+              "b": 3,
+              "rest_length": null,
+              "stiffness": 0.8,
+              "damping": 0.1,
+              "length_mul": 1.0,
+              "attach_radius": 40.0
+            }
+          }
+        },
+        "attachments": {
+          "entries": [
+            {
+              "vertex": 2,
+              "bone": 4,
+              "weight": 1.0,
+              "local": [
+                0.0,
+                300.0
+              ]
+            }
+          ]
+        },
+        "material": {
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "alpha_mode": "blend"
+        },
+        "solver_override": null
+      }
+    }
+  },
+  "bindings": [],
+  "solver": {
+    "hz": 120,
+    "iterations": 8,
+    "gravity": [
+      0.0,
+      0.0
+    ],
+    "global_damping": 0.98,
+    "max_substeps_per_frame": 8,
+    "enabled": true
+  },
+  "stage": {
+    "canvas": [
+      1920,
+      1080
+    ],
+    "background": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  }
+}

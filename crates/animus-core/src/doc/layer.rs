@@ -52,6 +52,7 @@ pub enum BlendMode {
 /// Kept as one enum (rather than always-3D) so the common 2D case doesn't
 /// carry an unused Z/roll/pitch around.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Transform2Or3 {
     Flat {
         translation: Vec2,

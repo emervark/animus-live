@@ -1,6 +1,7 @@
 use animus_core::doc::*;
-use animus_core::ids::{AssetId, LayerId};
+use animus_core::ids::{AssetId, LayerId, PuppetId};
 use animus_project::{AssetStore, ProjectError, load, save, to_json};
+use glam::{Quat, Vec2, Vec3};
 use std::fs;
 use tempfile::tempdir;
 
@@ -53,6 +54,47 @@ fn an_existing_project_survives_a_second_save() {
 fn non_finite_floats_are_rejected_at_write_time() {
     let mut p = sample();
     p.solver.global_damping = f32::NAN;
+    let err = to_json(&p).unwrap_err();
+    assert!(matches!(err, ProjectError::NonFiniteFloat { .. }));
+}
+
+#[test]
+fn a_non_finite_float_nested_inside_a_vec_is_rejected() {
+    // solver.global_damping is a top-level struct field; a NaN buried in a
+    // Vec (a mesh puppet's vertex positions) exercises the checking
+    // Serializer's SerializeSeq path, not just its top-level struct path.
+    let mut p = sample();
+    let texture_id = AssetId(p.alloc_id());
+    let mut mesh_puppet = MeshPuppet::empty(texture_id);
+    mesh_puppet.mesh.positions = vec![Vec2::new(1.0, 2.0), Vec2::new(3.0, f32::NAN)];
+    let puppet_id = PuppetId(p.alloc_id());
+    p.puppets.insert(
+        puppet_id,
+        Puppet {
+            id: puppet_id,
+            name: "Hero".into(),
+            kind: PuppetKind::Mesh(mesh_puppet),
+        },
+    );
+    let err = to_json(&p).unwrap_err();
+    assert!(matches!(err, ProjectError::NonFiniteFloat { .. }));
+}
+
+#[test]
+fn a_non_finite_float_nested_inside_an_enum_variant_is_rejected() {
+    // Transform2Or3::Spatial is a struct-like enum variant; a NaN inside
+    // its `rotation` quaternion exercises SerializeStructVariant, reached
+    // by way of serde's internally-buffered enum encoding.
+    let mut p = sample();
+    let hero_id = LayerId(p.alloc_id());
+    let mut layer = Layer::new(hero_id, "Hero");
+    layer.transform = Transform2Or3::Spatial {
+        translation: Vec3::ZERO,
+        rotation: Quat::from_xyzw(f32::NAN, 0.0, 0.0, 1.0),
+        scale: Vec3::ONE,
+    };
+    p.layers.push(hero_id);
+    p.layer_data.insert(hero_id, layer);
     let err = to_json(&p).unwrap_err();
     assert!(matches!(err, ProjectError::NonFiniteFloat { .. }));
 }

@@ -82,6 +82,7 @@ name = "animus-project"
 version = "0.1.0"
 dependencies = [
  "animus-core",
+ "glam 0.32.1",
  "indexmap",
  "insta",
  "serde",
