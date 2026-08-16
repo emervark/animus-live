@@ -101,7 +101,7 @@ impl CompiledRig {
     }
 
     /// Number of joints in this rig.
-    pub fn joint_count(&self) -> usize {
+    pub(crate) fn joint_count(&self) -> usize {
         self.rest.len()
     }
 }
