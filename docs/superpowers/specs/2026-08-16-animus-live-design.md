@@ -715,9 +715,45 @@ pub trait DocCommand: Send + Sync + 'static {
 
 Every command bumps `DocRevision` and pushes into `PendingChanges` at the finest granularity it knows (`JointMoved(p,j)`, not `PuppetChanged(p)`), so the expensive `Mesh` asset rebuild happens only when topology actually changed.
 
-### 10.6 Theme
+### 10.6 Theme — adopt Showmesh's design system
 
-Do not ship default egui visuals. `animus-editor/src/theme.rs` sets a dark neutral palette, `Rounding: 4.0`, generous `item_spacing`, and installs Inter + JetBrains Mono via `egui::FontDefinitions`. Wrap common widgets (`labelled_slider`, `section`, `danger_button`) so consistency is structural. **Budget two days for this in M1, not "later"** — an artist-facing tool that looks like a debug overlay loses users before they try it.
+**Decided 2026-08-17.** Animus Live uses the design system of the author's other tool,
+**Showmesh** (`C:\dev\Showmesh`, `DESIGN.md`), rather than inventing a second visual
+language. The two are for the same operator, in the same booth, on the same night, and
+in the same rack — Showmesh already sends Spout and speaks OSC and MIDI, so they will
+often be on one screen. A shared system is a feature, not a saving.
+
+What that means concretely, all of it lifted rather than reinterpreted:
+
+- **"The Instrument Panel."** A dark-booth surface: dense data rendered calm, state
+  always legible, alarms unmissable but rare.
+- **Three tonal depths, no borders.** App `#0A0C0F`, workspace `#14171D`, side panel
+  `#0D0F13`. Structure comes from **white veils at 3–7% alpha**; `#FFFFFF0F` is the only
+  line the UI draws.
+- **The Signal Rule.** Saturated colour is state, never decoration: green `#57C878`
+  ready/armed, coral `#F2606A` live or destructive, cyan `#45C8E8` data and I/O, amber
+  `#E3A94F` caution, violet `#8F8FFF` grouping.
+- **Two typefaces, strict roles.** Inter for anything a human wrote, JetBrains Mono for
+  anything the engine produced — times, counts, coordinates, key hints. Never mixed
+  within one value.
+- **Radii by component**, not one global rounding: track 2, badge 4, input 5, chip 6,
+  button 7, menu 8, panel 10.
+- **Flat by default; a shadow means floating or live.**
+- **The Readable Floor.** Anything the operator reads sits at `#7A828E` or brighter.
+
+**Where Animus extends it, and the rule that keeps the extension honest:** this tool
+draws things Showmesh has no equivalent for — mesh wireframe, bones, joints, attachment
+radii. Those are *drawing*, not state, so they take the **ink ramp**, not signal colours:
+wireframe in Ghost/Faint, bones in Mid, joints in Bright, selection as a white veil.
+Signal colour is then still free to mean exactly what it means in Showmesh — a joint
+bound to a live channel is cyan because it is I/O; a puppet visible on the projector
+carries coral because the audience can see it. Using amber for bones because bones look
+good in amber would break the one rule the system is built on.
+
+`animus-editor/src/theme.rs` implements the tokens as an egui visuals set plus the
+`labelled_slider` / `section` / `danger_button` wrappers, so consistency is structural.
+**Budget two days for this in M1, not "later"** — an artist-facing tool that looks like a
+debug overlay loses users before they try it.
 
 ---
 
@@ -924,6 +960,116 @@ Implemented in-house in `animus-signal/src/filter.rs` (~40 lines) with canonical
 
 ---
 
+### 13.6 Clips, loops and triggers
+
+Requested 2026-08-17: authored motion that **loops**, that can be arranged into a
+**sequence**, and that a **MIDI note from Ableton** can fire — so a kick drum makes
+something you animated happen.
+
+**The whole feature is one observation:** `TargetValues` is already the single place
+every producer writes and the solver reads. Live bindings write into it. The mouse
+writes into it. So a clip is not a new subsystem — it is a **third producer into the
+same map, driven by time instead of by an input.** Nothing downstream changes.
+
+**Why this model rather than keyframed vertex animation, which is what an animation
+tool would normally do:** a clip moves *targets*, and the springs move the puppet. A
+one-frame trigger therefore produces a whip with follow-through for free, and
+retriggering mid-motion re-aims rather than snapping. The physics is the animator;
+the clip is only telling it where to reach. Keyframing the mesh directly would throw
+away the one thing this tool has.
+
+#### Data model
+
+```rust
+pub struct Clip {
+    pub id: ClipId,
+    pub name: String,
+    pub duration: f32,            // seconds, or beats when tempo-locked
+    pub tracks: Vec<Track>,
+    pub playback: Playback,
+    pub quantize: Quantize,       // Off | Beat | Bar | Phrase
+}
+
+pub struct Track {
+    pub target: TargetPath,       // the same string bindings use
+    pub curve: Curve,
+    pub blend: TrackBlend,        // Override | Add
+    pub weight: f32,
+}
+
+pub enum Playback { OneShot, Loop, PingPong, HoldLast }
+
+pub struct Trigger {
+    pub source: TriggerSource,    // Manual | MidiNote{ch,note} | MidiCc | Osc{addr} | OnEnd(ClipId) | Every(Beats)
+    pub action: TriggerAction,    // Play | Stop | Toggle | Retrigger
+    pub clip: ClipId,
+}
+```
+
+`Track.target` is deliberately the same `TargetPath` a binding uses. One consequence
+worth stating: **anything bindable is animatable, and anything animatable is bindable,
+with no second registry to keep in sync.** The `◎` Learn affordance and the "add to
+clip" affordance sit on the same inspector row and address the same string.
+
+#### Precedence, which is the one rule that has to be decided up front
+
+Clips and live bindings can target the same path in the same tick. The rule:
+
+1. `SolveSet::Clips` evaluates first and writes `Override` tracks, accumulating `Add`
+   tracks by weight.
+2. `SolveSet::Bindings` runs after and **wins** on any path a live binding is actively
+   driving.
+
+**A hand on a controller always beats a running loop.** The alternative — last writer
+wins by system order — is the kind of rule that is fine in the studio and unusable at
+2am when a loop will not let go of a limb.
+
+#### Recording is the authoring path, not keyframing
+
+Because a performed drag already writes into `TargetValues`, recording is capturing
+that map over a span of time. **Arm → perform the motion by hand → stop → the take is
+a clip, and the clip can loop.** Keyframes then exist for cleaning a take up, not for
+building motion from nothing.
+
+This matters for who the tool is for. Asking a VJ to keyframe a walk cycle is asking
+them to be an animator; asking them to puppeteer it once and loop it is asking them to
+do what they already do. It is also nearly free to implement, which is the rare case
+where the cheap path and the right path are the same one.
+
+#### Tempo, and one licensing trap
+
+Triggering from Ableton means two separate things, and only one of them is hard:
+
+- **Note and CC triggers** are ordinary MIDI input, already arriving through
+  `animus-sources` in M2. A drum rack sending notes is enough for "every kick fires
+  clip 3".
+- **Musical timing** — starting a clip *on the beat* rather than 40 ms after the
+  operator's finger — needs tempo and phase. **MIDI clock (24 ppqn) carries both**, it
+  is what Ableton emits over any MIDI port, and it costs nothing but a counter.
+  `Quantize` then delays a triggered clip to the next beat, bar or phrase boundary.
+
+**Ableton Link is the obvious answer and it is off the table.** Link is dual-licensed
+GPLv2-or-commercial. Linking it into an `MIT OR Apache-2.0` application would force the
+whole project to GPL — the same constraint that governs the Animata clean-room rule
+(§1.3), arriving from a different direction. `cargo deny` already fails the build on
+GPL dependencies, so this is enforced rather than remembered. If Link is ever genuinely
+needed, it is a separate optional process speaking OSC, never a linked dependency.
+
+#### What this deliberately is not
+
+Not a DAW timeline. A linear arrangement track is the less useful half for live work,
+and building it first would produce a worse Ableton than Ableton. The shape is a
+**clip launcher** — a grid of named clips with triggers, fired live and quantised to
+the beat — with an optional ordered **cue list** for shows that run to a script. That
+ordering matches how the same operator already works in Showmesh, where the cue list
+is the spine and everything else serves it.
+
+#### Milestone
+
+Inserted as **M2.5**, after the signal bus (which supplies MIDI) and before 3D models.
+It can swap order with 3D if a show needs models sooner; it cannot precede M2, because
+triggers without a bus are a private timer with no way in.
+
 ## 14. Dependencies
 
 `[workspace.dependencies]` for one-place bumping. Status checked August 2026.
@@ -1119,6 +1265,12 @@ Import PNG → auto-silhouette → CDT mesh → place joints and bones → auto-
 Channel discovery, Learn, bindings with ranges/curves/One Euro, the Channels and Bindings panels, `--perform` booting straight to fullscreen with no editor.
 
 *Done when:* a TouchDesigner patch drives three joints on two puppets over OSC, mapped entirely by wiggling, and `animus --perform show.animus` reaches the projector in under 3 seconds with the editor never appearing.
+
+### M2.5 — Clips, loops and triggers (3–4 weeks)
+
+Clip launcher, record-a-take, `Playback::{OneShot, Loop, PingPong, HoldLast}`, MIDI note and CC triggers, MIDI-clock tempo with beat/bar quantise, `Override`/`Add` track blending, and the precedence rule that a live binding beats a running clip. See §13.6.
+
+*Done when:* a kick drum in Ableton fires a clip that whips a puppet's arm and lets the springs settle, the same clip loops in time with the track through a tempo change, and grabbing the joint by hand overrides the loop and gives it back on release.
 
 ### M3 — 3D models in the unified scene (4 weeks)
 

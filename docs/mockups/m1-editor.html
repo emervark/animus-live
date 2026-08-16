@@ -1,0 +1,1186 @@
+<title>Animus Live Editor</title>
+<style>
+  :root {
+    --page-bg: #f4f5f7;
+    --page-panel: #ffffff;
+    --page-line: #dcdfe4;
+    --page-ink: #1a1e24;
+    --page-muted: #5d6672;
+    --amber: #c97a1e;
+    --phosphor: #12796c;
+
+    --app-ground: #0f1216;
+    --app-panel: #161a20;
+    --app-raised: #1d232b;
+    --app-line: #2a313a;
+    --app-ink: #e3e8ee;
+    --app-muted: #8a94a0;
+    --app-amber: #ffb25c;
+    --app-phosphor: #63d2c3;
+    --app-danger: #e5645b;
+
+    --r: 4px;
+    --sans: ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "Consolas", "SF Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page-bg: #0b0d10;
+      --page-panel: #14181d;
+      --page-line: #262c34;
+      --page-ink: #e3e8ee;
+      --page-muted: #929cA8;
+      --amber: #ffb25c;
+      --phosphor: #63d2c3;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --page-bg: #0b0d10;
+    --page-panel: #14181d;
+    --page-line: #262c34;
+    --page-ink: #e3e8ee;
+    --page-muted: #929ca8;
+    --amber: #ffb25c;
+    --phosphor: #63d2c3;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 56px 24px 96px;
+    display: flex;
+    flex-direction: column;
+    gap: 56px;
+  }
+
+  .prose { max-width: 68ch; display: flex; flex-direction: column; gap: 18px; }
+
+  h1 {
+    font-size: clamp(30px, 4.4vw, 46px);
+    line-height: 1.08;
+    letter-spacing: -0.022em;
+    margin: 0;
+    text-wrap: balance;
+    font-weight: 660;
+  }
+
+  h2 {
+    font-size: 23px;
+    letter-spacing: -0.012em;
+    margin: 0;
+    font-weight: 620;
+    text-wrap: balance;
+  }
+
+  h3 { font-size: 17px; margin: 0; font-weight: 620; }
+
+  p { margin: 0; }
+  .lede { font-size: 19px; color: var(--page-muted); line-height: 1.55; }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--page-muted);
+  }
+
+  strong { font-weight: 640; }
+  code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: color-mix(in oklab, var(--page-ink) 8%, transparent);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ---------- the application frame ---------- */
+
+  .app {
+    background: var(--app-ground);
+    border: 1px solid var(--app-line);
+    border-radius: 8px;
+    overflow: hidden;
+    color: var(--app-ink);
+    font-size: 13px;
+    box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.75);
+  }
+
+  .titlebar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 9px 14px;
+    background: var(--app-raised);
+    border-bottom: 1px solid var(--app-line);
+  }
+
+  .dots { display: flex; gap: 6px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #333b45; }
+
+  .titlebar .name { font-family: var(--mono); font-size: 12px; color: var(--app-muted); }
+
+  .stagebar {
+    display: flex;
+    gap: 2px;
+    padding: 8px 10px 0;
+    background: var(--app-panel);
+    border-bottom: 1px solid var(--app-line);
+    overflow-x: auto;
+  }
+
+  .stagetab {
+    appearance: none;
+    border: 1px solid transparent;
+    border-bottom: none;
+    background: transparent;
+    color: var(--app-muted);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+    border-radius: var(--r) var(--r) 0 0;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+
+  .stagetab:hover { color: var(--app-ink); }
+  .stagetab[aria-selected="true"] {
+    background: var(--app-ground);
+    border-color: var(--app-line);
+    color: var(--app-amber);
+  }
+  .stagetab:focus-visible { outline: 2px solid var(--app-amber); outline-offset: -2px; }
+
+  .stagenum {
+    display: inline-block;
+    min-width: 1.2em;
+    color: color-mix(in oklab, currentColor 55%, transparent);
+  }
+
+  .dock {
+    display: grid;
+    grid-template-columns: 216px minmax(0, 1fr) 244px;
+    min-height: 470px;
+  }
+
+  .panel { background: var(--app-panel); display: flex; flex-direction: column; }
+  .panel + .panel { border-left: 1px solid var(--app-line); }
+  .dock > .stage { border-left: 1px solid var(--app-line); border-right: 1px solid var(--app-line); }
+
+  .panelhead {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--app-muted);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--app-line);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .panelbody { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+
+  .row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  .row .k { color: var(--app-muted); font-size: 12px; }
+  .row .v { font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  .slider { display: flex; flex-direction: column; gap: 5px; }
+  .slider .track { height: 4px; border-radius: 2px; background: var(--app-line); position: relative; }
+  .slider .fill { position: absolute; inset: 0 auto 0 0; border-radius: 2px; background: var(--app-amber); }
+  .slider .knob {
+    position: absolute; top: 50%; width: 11px; height: 11px; border-radius: 50%;
+    background: var(--app-ink); transform: translate(-50%, -50%);
+  }
+
+  .list { display: flex; flex-direction: column; gap: 1px; }
+  .item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 8px; border-radius: 3px; color: var(--app-ink);
+  }
+  .item.sel { background: color-mix(in oklab, var(--app-amber) 18%, transparent); }
+  .item .sw { width: 8px; height: 8px; border-radius: 2px; background: var(--app-muted); flex: none; }
+  .item.sel .sw { background: var(--app-amber); }
+  .item .tail { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--app-muted); }
+
+  .learn {
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 1px solid var(--app-line); color: var(--app-muted);
+    font-size: 9px; display: grid; place-items: center; flex: none;
+  }
+
+  .stage { position: relative; background: #0a0c0f; display: flex; flex-direction: column; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  canvas.dragging { cursor: grabbing; }
+  .canvasWrap { position: relative; flex: 1; min-height: 380px; }
+
+  .hud {
+    position: absolute; left: 10px; top: 10px;
+    font-family: var(--mono); font-size: 11px; color: var(--app-muted);
+    background: color-mix(in oklab, #000 55%, transparent);
+    padding: 5px 8px; border-radius: 3px; pointer-events: none;
+    line-height: 1.5;
+  }
+
+  .hint {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    font-size: 12px; color: var(--app-ink);
+    background: color-mix(in oklab, var(--app-amber) 22%, #000 60%);
+    border: 1px solid color-mix(in oklab, var(--app-amber) 40%, transparent);
+    padding: 5px 11px; border-radius: 999px; pointer-events: none; white-space: nowrap;
+  }
+
+  .outputPip {
+    position: absolute; right: 10px; bottom: 10px; width: 168px;
+    border: 1px solid var(--app-line); border-radius: 3px; overflow: hidden;
+    background: #000;
+  }
+  .outputPip .cap {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--app-muted); padding: 4px 6px; border-bottom: 1px solid var(--app-line);
+    display: flex; justify-content: space-between; background: var(--app-panel);
+  }
+  .outputPip .live { color: var(--app-phosphor); }
+
+  .statusbar {
+    display: flex; gap: 18px; align-items: center;
+    padding: 7px 12px; border-top: 1px solid var(--app-line);
+    background: var(--app-panel);
+    font-family: var(--mono); font-size: 11px; color: var(--app-muted);
+    font-variant-numeric: tabular-nums; flex-wrap: wrap;
+  }
+  .statusbar .on { color: var(--app-phosphor); }
+  .statusbar .warn { color: var(--app-amber); }
+
+  .toolcol { display: flex; flex-direction: column; gap: 2px; }
+  .tool {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 9px; border-radius: 3px; color: var(--app-muted);
+  }
+  .tool.sel { background: var(--app-raised); color: var(--app-ink); }
+  .tool .key { margin-left: auto; font-family: var(--mono); font-size: 10px; opacity: 0.75; }
+
+  /* ---------- annotations ---------- */
+
+  .noteGrid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(248px, 1fr));
+    gap: 16px;
+  }
+
+  .note {
+    background: var(--page-panel);
+    border: 1px solid var(--page-line);
+    border-radius: var(--r);
+    padding: 15px 16px;
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  .note h3 { font-size: 14.5px; }
+  .note p { font-size: 14px; color: var(--page-muted); line-height: 1.55; }
+
+  .callouts { display: flex; flex-direction: column; gap: 10px; }
+  .callout {
+    display: grid; grid-template-columns: 26px 1fr; gap: 12px; align-items: start;
+    background: var(--page-panel); border: 1px solid var(--page-line);
+    border-radius: var(--r); padding: 13px 15px;
+  }
+  .callout .n {
+    font-family: var(--mono); font-size: 11px; color: var(--amber);
+    border: 1px solid color-mix(in oklab, var(--amber) 40%, transparent);
+    border-radius: 3px; text-align: center; padding: 1px 0; line-height: 1.5;
+  }
+  .callout p { font-size: 14.5px; }
+  .callout .t { font-weight: 620; }
+
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--page-line); vertical-align: top; }
+  th { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--page-muted); font-weight: 500; }
+  .tableWrap { overflow-x: auto; border: 1px solid var(--page-line); border-radius: var(--r); background: var(--page-panel); }
+
+  .q {
+    border-left: 3px solid var(--amber);
+    padding: 4px 0 4px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .q p { font-size: 15px; color: var(--page-muted); }
+
+  hr { border: none; border-top: 1px solid var(--page-line); margin: 0; }
+
+  @media (max-width: 900px) {
+    .dock { grid-template-columns: 1fr; }
+    .panel + .panel { border-left: none; border-top: 1px solid var(--app-line); }
+    .dock > .stage { border: none; border-top: 1px solid var(--app-line); border-bottom: 1px solid var(--app-line); }
+    .outputPip { width: 128px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header class="prose">
+    <div class="eyebrow">Animus Live · M1 · 2D vertikaallõige</div>
+    <h1>Editor, mille me M1-s ehitame</h1>
+    <p class="lede">
+      Neli sammu ühes aknas: pilt sisse, võrk peale, luud külge, nukk elama.
+      Vaade all on interaktiivne — <strong>selle sees jookseb päris mass-vedru solver</strong>,
+      sama loogika mis <code>animus-core</code>-is. Tõmba nuku käest ja vaata, kas tunne on õige.
+    </p>
+  </header>
+
+  <section style="display:flex; flex-direction:column; gap:18px;">
+    <div class="prose">
+      <div class="eyebrow">Mockup</div>
+      <h2>Sama aken, neli etappi</h2>
+      <p style="color:var(--page-muted)">
+        Vaheta etappe ülevalt. Paneelid muutuvad, vaade jääb samaks — see ongi mõte:
+        operaator ei lülitu režiimide vahel, vaid sama nukk lihtsalt muutub valmimise käigus.
+      </p>
+    </div>
+
+    <div class="app">
+      <div class="titlebar">
+        <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+        <span class="name">animus — kevadetendus.animus</span>
+      </div>
+
+      <div class="stagebar" role="tablist" aria-label="Etapid">
+        <button class="stagetab" role="tab" aria-selected="true" data-stage="0"><span class="stagenum">1</span> Import</button>
+        <button class="stagetab" role="tab" aria-selected="false" data-stage="1"><span class="stagenum">2</span> Võrk</button>
+        <button class="stagetab" role="tab" aria-selected="false" data-stage="2"><span class="stagenum">3</span> Luustik</button>
+        <button class="stagetab" role="tab" aria-selected="false" data-stage="3"><span class="stagenum">4</span> Esitus</button>
+      </div>
+
+      <div class="dock">
+        <!-- LEFT -->
+        <div class="panel">
+          <div class="panelhead"><span>Kihid</span><span>+</span></div>
+          <div class="panelbody">
+            <div class="list">
+              <div class="item sel"><span class="sw"></span> Nukk 01 <span class="tail">z 0.02</span></div>
+              <div class="item"><span class="sw"></span> Taust <span class="tail">z 0.01</span></div>
+            </div>
+          </div>
+          <div class="panelhead"><span>Tööriistad</span></div>
+          <div class="panelbody">
+            <div class="toolcol" id="tools"></div>
+          </div>
+        </div>
+
+        <!-- VIEWPORT -->
+        <div class="stage">
+          <div class="canvasWrap">
+            <canvas id="c"></canvas>
+            <div class="hud" id="hud"></div>
+            <div class="hint" id="hint"></div>
+            <div class="outputPip" id="pip" hidden>
+              <div class="cap"><span>Väljund · projektor</span><span class="live">● LIVE</span></div>
+              <canvas id="pipc" style="height:94px"></canvas>
+            </div>
+          </div>
+          <div class="statusbar">
+            <span id="st-mode">režiim: <span class="warn">redigeerimine</span></span>
+            <span id="st-sel">valitud: —</span>
+            <span id="st-scale">1 px = 0.0500 world</span>
+            <span id="st-solver">solver: <span class="on">120 Hz</span></span>
+            <span id="st-out">väljund: <span class="on">DISPLAY2 · 1080p60 · vsync sees</span></span>
+          </div>
+        </div>
+
+        <!-- RIGHT -->
+        <div class="panel">
+          <div class="panelhead"><span id="insTitle">Inspektor</span></div>
+          <div class="panelbody" id="inspector"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="callouts" id="callouts"></div>
+  </section>
+
+  <hr />
+
+  <section class="prose">
+    <div class="eyebrow">Loogika</div>
+    <h2>Kaks režiimi, ja see on kogu editori süda</h2>
+    <p>
+      Kõige olulisem otsus kogu editoris ei ole see, kus paneelid asuvad, vaid see,
+      <strong>mis juhtub siis, kui sa liigest lohistad</strong>. Vastus sõltub režiimist,
+      ja need kaks on tahtlikult erinevad.
+    </p>
+  </section>
+
+  <div class="tableWrap">
+    <table>
+      <thead>
+        <tr><th>&nbsp;</th><th>Redigeerimine</th><th>Esitus (live)</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>Mida lohistamine teeb</strong></td>
+          <td>muudab liigese <em>puhkeasendit</em> — nukk ehitatakse ümber</td>
+          <td>seab liigesele <em>sihtmärgi</em> — solver tõmbab nuku sinna</td>
+        </tr>
+        <tr>
+          <td><strong>Mis dokumenti kirjutatakse</strong></td>
+          <td><code>MoveJointRest</code> käsk, tagasivõetav</td>
+          <td><strong>mitte midagi</strong> — dokument jääb puutumata</td>
+        </tr>
+        <tr>
+          <td><strong>Mida sa näed</strong></td>
+          <td>liiges läheb sinna, kuhu ta panid</td>
+          <td>nukk vetrub, jääb natuke maha, tuleb tagasi</td>
+        </tr>
+        <tr>
+          <td><strong>Miks nii</strong></td>
+          <td>ehitamise ajal tahad täpsust</td>
+          <td>esinemise ajal tahad näha, kuidas ta <em>laval</em> käitub</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="prose">
+    <p>
+      Live-režiimis ei kirjuta lohistamine kunagi otse nuku asendit. See läheb solverisse
+      sihtmärgina ja tagasi tuleb see, mida füüsika vastab. Nii on see, mida sa proovides näed,
+      juba päris — mitte eelvaade, mis esinemisel teistmoodi käitub. Ekraanil all on
+      <strong>live-režiim</strong>: tõmba käest ja lase lahti.
+    </p>
+  </section>
+
+  <hr />
+
+  <section style="display:flex; flex-direction:column; gap:20px;">
+    <div class="prose">
+      <div class="eyebrow">Aknajaotus</div>
+      <h2>Miks paneelid on just seal</h2>
+    </div>
+    <div class="noteGrid">
+      <div class="note">
+        <h3>Vasak = mis stseenis on</h3>
+        <p>Kihid ja tööriistad. Kihi järjekord on ühtlasi sügavusjärjekord — hiljem satuvad 3D-mudelid samasse nimekirja 2D-kihtide vahele, ilma uue mõisteta.</p>
+      </div>
+      <div class="note">
+        <h3>Keskel = ainus koht, kus nukku puudutad</h3>
+        <p>Vaade on renderdatud tekstuur egui sees. Klikk teisendatakse maailmakoordinaatideks otse kaamera kaudu — M0-2 mõõtis täpsuseks 1,12 px 125% skaleerimisel.</p>
+      </div>
+      <div class="note">
+        <h3>Parem = valitud asja omadused</h3>
+        <p>Iga rida kirjutab käsu, mitte ei muuda väärtust kohapeal. Sellepärast töötab Ctrl+Z ka liuguri lohistamise peal — 200 sündmust liidetakse üheks sammuks.</p>
+      </div>
+      <div class="note">
+        <h3>All = mis praegu tõsi on</h3>
+        <p>Režiim, valik, mõõtkava, solveri sagedus ja see, kuhu väljund läheb. Viimane rida on see, mis muudab esinemispaigas probleemi viie sekundi diagnoosiks.</p>
+      </div>
+      <div class="note">
+        <h3>◎ igal real</h3>
+        <p>Learn-nupp. M1-s on ta olemas, aga vait. M2-s teeb sama nupp igast omadusest OSC- või MIDI-juhitava kanali — vaba koht on hoitud juba praegu, et paigutus hiljem ei nihkuks.</p>
+      </div>
+      <div class="note">
+        <h3>Abijooned ei lähe projektorile</h3>
+        <p>Luud, liigesed, võrk ja valik elavad eraldi renderduskihil. Väljundaken neid ei näe — see on M0-4-s silmaga üle kontrollitud. Vaata pilti all paremal 4. etapis.</p>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <section class="prose">
+    <div class="eyebrow">Mida ma sinult vajan</div>
+    <h2>Üks otsustatud, kaks lahtist</h2>
+  </section>
+
+  <div class="split">
+    <div class="q" style="border-left-color: var(--phosphor)">
+      <h3>1. Pildiformaat — otsustatud</h3>
+      <p>
+        <strong>M1 loeb PNG-d alfakanaliga.</strong> Taustaeemaldus tehakse mujal.
+        Uks jääb lahti kolme kohaga: dekodeerimine käib ühest tabelist, alfa allikas on
+        failivormingus juba väli, ja tagasilükkamise tekst on see koht, kuhu uus samm kinnitub.
+        Uue formaadi lisamine puudutab siis kahte rida, mitte arhitektuuri.
+      </p>
+    </div>
+    <div class="q">
+      <h3>2. Kas luud pannakse käsitsi?</h3>
+      <p>
+        Praegu: klikid liigesed, lohistad luud, kinnitus tuleb raadiuse järgi automaatselt.
+        Kaalumise pintsel on alles M6-s. Kas automaatne kinnitus + raadiuse liugur on
+        piisav, et esimene nukk päriselt liiguks?
+      </p>
+    </div>
+    <div class="q">
+      <h3>3. Kas neli etappi on õige jaotus?</h3>
+      <p>
+        Mockup näitab neid sakkidena, aga päris programmis need ei ole režiimid — need on
+        lihtsalt see, mis nukul juba olemas on. Kas sa tahaksid neid siiski selgete
+        sammudena näha, või pigem üht vaba lõuendit?
+      </p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---------- puppet definition (image space, 0..100) ----------
+
+  var OUTLINE = [
+    [50,4],[56,6],[59,12],[57,19],[53,23],
+    [58,25],[65,28],
+    [75,21],[85,12],[92,6],[96,9],[89,17],[79,27],[70,34],
+    [66,42],[65,56],
+    [64,70],[62,84],[60,95],
+    [53,96],[52,84],[50,72],
+    [48,84],[47,96],
+    [40,95],[38,84],[36,70],
+    [35,56],[34,42],
+    [26,38],[16,47],[11,52],[8,49],[13,42],
+    [24,32],[35,28],[42,25],
+    [47,23],[43,19],[41,12],[44,6]
+  ];
+
+  // joints: [x, y, pinned]
+  var JOINTS = [
+    [50,70,1],  // 0 hips (pinned)
+    [49,56,0],  // 1 spine
+    [48,42,0],  // 2 chest
+    [50,20,0],  // 3 head
+    [65,29,0],  // 4 shoulder R
+    [77,20,0],  // 5 elbow R
+    [90,9 ,0],  // 6 wrist R  <- the one to drag
+    [35,29,0],  // 7 shoulder L
+    [24,38,0],  // 8 elbow L
+    [12,49,0],  // 9 wrist L
+    [44,72,0],  // 10 hip L
+    [42,84,0],  // 11 knee L
+    [40,95,1],  // 12 foot L (pinned)
+    [56,72,0],  // 13 hip R
+    [58,84,0],  // 14 knee R
+    [60,95,1]   // 15 foot R (pinned)
+  ];
+
+  var BONES = [
+    [0,1],[1,2],[2,3],
+    [2,4],[4,5],[5,6],
+    [2,7],[7,8],[8,9],
+    [0,10],[10,11],[11,12],
+    [0,13],[13,14],[14,15]
+  ];
+
+  var ATTACH_RADIUS = 26;
+
+  // ---------- geometry helpers ----------
+
+  function pointInPoly(x, y, poly) {
+    var inside = false;
+    for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      var xi = poly[i][0], yi = poly[i][1], xj = poly[j][0], yj = poly[j][1];
+      if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi)) inside = !inside;
+    }
+    return inside;
+  }
+
+  // Bowyer-Watson Delaunay over a point set.
+  function delaunay(pts) {
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    pts.forEach(function (p) {
+      if (p[0] < minX) minX = p[0];
+      if (p[1] < minY) minY = p[1];
+      if (p[0] > maxX) maxX = p[0];
+      if (p[1] > maxY) maxY = p[1];
+    });
+    var dx = maxX - minX, dy = maxY - minY, dm = Math.max(dx, dy) * 10;
+    var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    var P = pts.slice();
+    var i0 = P.length, i1 = P.length + 1, i2 = P.length + 2;
+    P.push([cx - dm, cy - dm], [cx + dm, cy - dm], [cx, cy + dm]);
+
+    var tris = [[i0, i1, i2]];
+
+    function circum(t) {
+      var a = P[t[0]], b = P[t[1]], c = P[t[2]];
+      var ax = a[0], ay = a[1], bx = b[0], by = b[1], cx2 = c[0], cy2 = c[1];
+      var d = 2 * (ax * (by - cy2) + bx * (cy2 - ay) + cx2 * (ay - by));
+      if (Math.abs(d) < 1e-12) return null;
+      var ux = ((ax * ax + ay * ay) * (by - cy2) + (bx * bx + by * by) * (cy2 - ay) + (cx2 * cx2 + cy2 * cy2) * (ay - by)) / d;
+      var uy = ((ax * ax + ay * ay) * (cx2 - bx) + (bx * bx + by * by) * (ax - cx2) + (cx2 * cx2 + cy2 * cy2) * (bx - ax)) / d;
+      var r = Math.hypot(ax - ux, ay - uy);
+      return [ux, uy, r];
+    }
+
+    for (var p = 0; p < pts.length; p++) {
+      var bad = [], keep = [];
+      for (var t = 0; t < tris.length; t++) {
+        var cc = circum(tris[t]);
+        if (cc && Math.hypot(P[p][0] - cc[0], P[p][1] - cc[1]) < cc[2]) bad.push(tris[t]);
+        else keep.push(tris[t]);
+      }
+      var edges = [];
+      bad.forEach(function (t2) {
+        [[t2[0], t2[1]], [t2[1], t2[2]], [t2[2], t2[0]]].forEach(function (e) {
+          var k = -1;
+          for (var q = 0; q < edges.length; q++) {
+            if ((edges[q][0] === e[0] && edges[q][1] === e[1]) || (edges[q][0] === e[1] && edges[q][1] === e[0])) { k = q; break; }
+          }
+          if (k >= 0) edges.splice(k, 1); else edges.push(e);
+        });
+      });
+      edges.forEach(function (e) { keep.push([e[0], e[1], p]); });
+      tris = keep;
+    }
+
+    return tris.filter(function (t) {
+      return t[0] < pts.length && t[1] < pts.length && t[2] < pts.length;
+    });
+  }
+
+  function buildMesh() {
+    var pts = [];
+    OUTLINE.forEach(function (p) { pts.push([p[0], p[1]]); });
+    // densify the boundary a little so the rim triangles stay small
+    for (var i = 0; i < OUTLINE.length; i++) {
+      var a = OUTLINE[i], b = OUTLINE[(i + 1) % OUTLINE.length];
+      if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 9) {
+        pts.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+      }
+    }
+    // jittered interior grid (stand-in for the Poisson-disc sampling in core)
+    var step = 6.2, seed = 12345;
+    function rnd() { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; }
+    for (var y = 4; y < 100; y += step) {
+      for (var x = 4; x < 100; x += step) {
+        var jx = x + (rnd() - 0.5) * step * 0.7, jy = y + (rnd() - 0.5) * step * 0.7;
+        if (pointInPoly(jx, jy, OUTLINE)) pts.push([jx, jy]);
+      }
+    }
+    var tris = delaunay(pts).filter(function (t) {
+      var cx = (pts[t[0]][0] + pts[t[1]][0] + pts[t[2]][0]) / 3;
+      var cy = (pts[t[0]][1] + pts[t[1]][1] + pts[t[2]][1]) / 3;
+      return pointInPoly(cx, cy, OUTLINE); // centroid filter, exactly as animus-core does
+    });
+    return { pts: pts, tris: tris };
+  }
+
+  var MESH = buildMesh();
+
+  // ---------- skinning: bind each vertex into its bones' local frames ----------
+
+  function boneFrame(ja, jb) {
+    var dx = jb[0] - ja[0], dy = jb[1] - ja[1];
+    var len = Math.hypot(dx, dy) || 1e-6;
+    return { ox: ja[0], oy: ja[1], cx: dx / len, sy: dy / len, len: len };
+  }
+
+  function bindWeights() {
+    var rest = JOINTS.map(function (j) { return [j[0], j[1]]; });
+    var frames = BONES.map(function (b) { return boneFrame(rest[b[0]], rest[b[1]]); });
+
+    return MESH.pts.map(function (v) {
+      var ws = [];
+      frames.forEach(function (f, bi) {
+        // distance to the segment
+        var vx = v[0] - f.ox, vy = v[1] - f.oy;
+        var t = Math.max(0, Math.min(f.len, vx * f.cx + vy * f.sy));
+        var px = f.ox + f.cx * t, py = f.oy + f.sy * t;
+        var d = Math.hypot(v[0] - px, v[1] - py);
+        if (d < ATTACH_RADIUS) {
+          var w = Math.pow(1 - d / ATTACH_RADIUS, 2);
+          // local coords in the bone's rest frame
+          var lx = vx * f.cx + vy * f.sy;
+          var ly = -vx * f.sy + vy * f.cx;
+          ws.push({ b: bi, w: w, lx: lx, ly: ly });
+        }
+      });
+      ws.sort(function (a, b) { return b.w - a.w; });
+      ws = ws.slice(0, 4); // top 4, as the GPU bake does
+      var sum = ws.reduce(function (s, x) { return s + x.w; }, 0) || 1;
+      ws.forEach(function (x) { x.w /= sum; });
+      return ws;
+    });
+  }
+
+  var WEIGHTS = bindWeights();
+
+  // ---------- solver: Verlet + Gauss-Seidel distance constraints ----------
+
+  var pos = JOINTS.map(function (j) { return [j[0], j[1]]; });
+  var prev = JOINTS.map(function (j) { return [j[0], j[1]]; });
+  var rest = JOINTS.map(function (j) { return [j[0], j[1]]; });
+  var restLen = BONES.map(function (b) {
+    return Math.hypot(rest[b[1]][0] - rest[b[0]][0], rest[b[1]][1] - rest[b[0]][1]);
+  });
+
+  var target = null;      // {j, x, y}
+  var STIFF = 0.72, DAMP = 0.975, ITERS = 8, PULL = 0.30;
+
+  function step() {
+    for (var i = 0; i < pos.length; i++) {
+      if (JOINTS[i][2]) { pos[i][0] = rest[i][0]; pos[i][1] = rest[i][1]; prev[i][0] = pos[i][0]; prev[i][1] = pos[i][1]; continue; }
+      var vx = (pos[i][0] - prev[i][0]) * DAMP;
+      var vy = (pos[i][1] - prev[i][1]) * DAMP;
+      prev[i][0] = pos[i][0]; prev[i][1] = pos[i][1];
+      pos[i][0] += vx;
+      pos[i][1] += vy;
+      // gentle pull back toward rest — the spring that makes it settle
+      pos[i][0] += (rest[i][0] - pos[i][0]) * 0.012;
+      pos[i][1] += (rest[i][1] - pos[i][1]) * 0.012;
+    }
+
+    if (target) {
+      pos[target.j][0] += (target.x - pos[target.j][0]) * PULL;
+      pos[target.j][1] += (target.y - pos[target.j][1]) * PULL;
+    }
+
+    for (var k = 0; k < ITERS; k++) {
+      for (var b = 0; b < BONES.length; b++) {
+        var a = BONES[b][0], c = BONES[b][1];
+        var dx = pos[c][0] - pos[a][0], dy = pos[c][1] - pos[a][1];
+        var d = Math.hypot(dx, dy) || 1e-6;
+        var diff = (d - restLen[b]) / d * STIFF;
+        var wa = JOINTS[a][2] ? 0 : 0.5, wc = JOINTS[c][2] ? 0 : 0.5;
+        var tot = wa + wc; if (tot === 0) continue;
+        wa /= tot; wc /= tot;
+        pos[a][0] += dx * diff * wa; pos[a][1] += dy * diff * wa;
+        pos[c][0] -= dx * diff * wc; pos[c][1] -= dy * diff * wc;
+      }
+    }
+  }
+
+  function skinnedPoints() {
+    var frames = BONES.map(function (b) { return boneFrame(pos[b[0]], pos[b[1]]); });
+    return MESH.pts.map(function (v, i) {
+      var ws = WEIGHTS[i];
+      if (!ws.length) return [v[0], v[1]];
+      var x = 0, y = 0;
+      for (var k = 0; k < ws.length; k++) {
+        var f = frames[ws[k].b];
+        x += ws[k].w * (f.ox + f.cx * ws[k].lx - f.sy * ws[k].ly);
+        y += ws[k].w * (f.oy + f.sy * ws[k].lx + f.cx * ws[k].ly);
+      }
+      return [x, y];
+    });
+  }
+
+  // ---------- rendering ----------
+
+  var stage = 0;
+  var cv = document.getElementById("c");
+  var ctx = cv.getContext("2d");
+  var pipc = document.getElementById("pipc");
+  var pctx = pipc.getContext("2d");
+  var view = { s: 1, ox: 0, oy: 0 };
+
+  function fit(canvas, c2, pad) {
+    var r = canvas.getBoundingClientRect();
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.round(r.width * dpr));
+    canvas.height = Math.max(1, Math.round(r.height * dpr));
+    c2.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var s = Math.min(r.width / (100 + pad * 2), r.height / (100 + pad * 2));
+    return { s: s, ox: (r.width - 100 * s) / 2, oy: (r.height - 100 * s) / 2, w: r.width, h: r.height };
+  }
+
+  function P(v, vw) { return [vw.ox + v[0] * vw.s, vw.oy + v[1] * vw.s]; }
+
+  function drawArtwork(c2, pts, vw, alpha) {
+    // the imported drawing, deformed by the same skinning as the mesh
+    c2.save();
+    c2.globalAlpha = alpha;
+    c2.beginPath();
+    for (var i = 0; i < OUTLINE.length; i++) {
+      var idx = i; // outline points are the first N entries of MESH.pts
+      var p = P(pts[idx], vw);
+      if (i === 0) c2.moveTo(p[0], p[1]); else c2.lineTo(p[0], p[1]);
+    }
+    c2.closePath();
+    var g = c2.createLinearGradient(vw.ox, vw.oy, vw.ox, vw.oy + 100 * vw.s);
+    g.addColorStop(0, "#4a6fa5");
+    g.addColorStop(1, "#2f4a72");
+    c2.fillStyle = g;
+    c2.fill();
+    c2.restore();
+  }
+
+  function drawMesh(c2, pts, vw, alpha) {
+    c2.save();
+    c2.globalAlpha = alpha;
+    c2.strokeStyle = "#63d2c3";
+    c2.lineWidth = 0.7;
+    c2.beginPath();
+    MESH.tris.forEach(function (t) {
+      var a = P(pts[t[0]], vw), b = P(pts[t[1]], vw), c3 = P(pts[t[2]], vw);
+      c2.moveTo(a[0], a[1]); c2.lineTo(b[0], b[1]); c2.lineTo(c3[0], c3[1]); c2.closePath();
+    });
+    c2.stroke();
+    c2.restore();
+  }
+
+  function drawSilhouette(c2, pts, vw) {
+    c2.save();
+    c2.strokeStyle = "#ffb25c";
+    c2.lineWidth = 1.6;
+    c2.setLineDash([4, 3]);
+    c2.beginPath();
+    for (var i = 0; i < OUTLINE.length; i++) {
+      var p = P(pts[i], vw);
+      if (i === 0) c2.moveTo(p[0], p[1]); else c2.lineTo(p[0], p[1]);
+    }
+    c2.closePath();
+    c2.stroke();
+    c2.restore();
+  }
+
+  function drawRig(c2, vw, showRadius) {
+    if (showRadius) {
+      c2.save();
+      c2.globalAlpha = 0.13;
+      c2.fillStyle = "#ffb25c";
+      [5, 6].forEach(function (ji) {
+        var p = P(pos[ji], vw);
+        c2.beginPath();
+        c2.arc(p[0], p[1], ATTACH_RADIUS * vw.s, 0, Math.PI * 2);
+        c2.fill();
+      });
+      c2.restore();
+    }
+
+    c2.save();
+    c2.strokeStyle = "#ffb25c";
+    c2.lineWidth = 2;
+    c2.lineCap = "round";
+    BONES.forEach(function (b) {
+      var a = P(pos[b[0]], vw), d = P(pos[b[1]], vw);
+      c2.beginPath(); c2.moveTo(a[0], a[1]); c2.lineTo(d[0], d[1]); c2.stroke();
+    });
+    pos.forEach(function (j, i) {
+      var p = P(j, vw);
+      c2.beginPath();
+      c2.arc(p[0], p[1], i === 6 ? 5 : 3.4, 0, Math.PI * 2);
+      c2.fillStyle = JOINTS[i][2] ? "#e5645b" : (i === 6 ? "#ffffff" : "#e3e8ee");
+      c2.fill();
+      if (i === 6) { c2.strokeStyle = "#ffb25c"; c2.lineWidth = 2; c2.stroke(); }
+    });
+    c2.restore();
+  }
+
+  var t0 = performance.now();
+  var userTouched = false;
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  function frame(now) {
+    // auto-wave until the user takes over, so the page is alive but not busy
+    if (stage === 3 && !userTouched && !reduce) {
+      var t = (now - t0) / 1000;
+      target = { j: 6, x: 90 + Math.sin(t * 1.5) * 13, y: 9 + Math.cos(t * 1.1) * 7 };
+    }
+    if (stage === 3 || dragging) step();
+
+    var vw = fit(cv, ctx, 6);
+    view = vw;
+    ctx.clearRect(0, 0, vw.w, vw.h);
+
+    var pts = (stage === 3 || dragging) ? skinnedPoints() : MESH.pts;
+
+    // stage 1: artwork + matte edge. no mesh, no rig.
+    if (stage === 0) {
+      drawArtwork(ctx, pts, vw, 1);
+      drawSilhouette(ctx, pts, vw);
+    } else if (stage === 1) {
+      drawArtwork(ctx, pts, vw, 0.5);
+      drawMesh(ctx, pts, vw, 0.85);
+      drawSilhouette(ctx, pts, vw);
+    } else if (stage === 2) {
+      drawArtwork(ctx, pts, vw, 0.42);
+      drawMesh(ctx, pts, vw, 0.3);
+      drawRig(ctx, vw, true);
+    } else {
+      drawArtwork(ctx, pts, vw, 1);
+      drawMesh(ctx, pts, vw, 0.16);
+      drawRig(ctx, vw, false);
+    }
+
+    // the projector view: identical artwork, zero gizmos
+    if (stage === 3) {
+      var pv = fit(pipc, pctx, 4);
+      pctx.clearRect(0, 0, pv.w, pv.h);
+      drawArtwork(pctx, pts, pv, 1);
+    }
+
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- interaction ----------
+
+  var dragging = false;
+  var hud = document.getElementById("hud");
+
+  function toImage(ev) {
+    var r = cv.getBoundingClientRect();
+    return [(ev.clientX - r.left - view.ox) / view.s, (ev.clientY - r.top - view.oy) / view.s];
+  }
+
+  cv.addEventListener("pointerdown", function (ev) {
+    if (stage < 2) return;
+    var p = toImage(ev);
+    var best = -1, bd = 7;
+    pos.forEach(function (j, i) {
+      var d = Math.hypot(j[0] - p[0], j[1] - p[1]);
+      if (d < bd) { bd = d; best = i; }
+    });
+    if (best >= 0) {
+      dragging = true; userTouched = true;
+      target = { j: best, x: p[0], y: p[1] };
+      cv.classList.add("dragging");
+      cv.setPointerCapture(ev.pointerId);
+      document.getElementById("st-sel").textContent = "valitud: joint " + best;
+    }
+  });
+
+  cv.addEventListener("pointermove", function (ev) {
+    var p = toImage(ev);
+    hud.textContent = "x " + p[0].toFixed(1) + "   y " + p[1].toFixed(1) +
+      (target && dragging ? "\njoint " + target.j : "");
+    if (dragging && target) { target.x = p[0]; target.y = p[1]; }
+  });
+
+  function release() {
+    if (!dragging) return;
+    dragging = false;
+    target = null;
+    cv.classList.remove("dragging");
+  }
+  cv.addEventListener("pointerup", release);
+  cv.addEventListener("pointercancel", release);
+  cv.addEventListener("pointerleave", function () { hud.textContent = hudBase(); });
+
+  function hudBase() {
+    return ["vaade: 1:1", "võrk: " + MESH.pts.length + " tippu · " + MESH.tris.length + " kolmnurka",
+            "luud: " + BONES.length + " · liigesed: " + JOINTS.length].join("\n");
+  }
+
+  // ---------- panel content per stage ----------
+
+  var TOOLS = [
+    ["Vali", "V"], ["Liiges", "J"], ["Luu", "B"], ["Tipp", "P"], ["Panoraam", "space"]
+  ];
+
+  var STAGES = [
+    {
+      tool: 0,
+      insTitle: "Import",
+      hint: "PNG läbipaistvusega — siluett tuleb alfakanalist",
+      mode: "redigeerimine",
+      inspector: [
+        { type: "row", k: "fail", v: "tantsija.png" },
+        { type: "row", k: "suurus", v: "1400 × 2100" },
+        { type: "row", k: "alfakanal", v: "olemas" },
+        { type: "row", k: "kaetud", v: "63%" },
+        { type: "head", t: "Alfa allikas" },
+        { type: "seg", opts: ["Pildi alfa", "+ hiljem"], sel: 0 },
+        { type: "note", t: "M1 loeb PNG-d. Väli on failivormingus olemas juba praegu, nii et uue alfa-allika lisamine on hiljem uus väärtus olemasolevas väljas — mitte formaadimuudatus." }
+      ]
+    },
+    {
+      tool: 0,
+      insTitle: "Võrgu parameetrid",
+      hint: "Siluett → kolmnurgad. Liugurid muudavad võrku kohe.",
+      mode: "redigeerimine",
+      inspector: [
+        { type: "slider", k: "alfa lävi", v: "8", pct: 12 },
+        { type: "slider", k: "sulgemine", v: "2 px", pct: 20 },
+        { type: "slider", k: "lihtsustus", v: "2.0 px", pct: 33 },
+        { type: "slider", k: "tihedus", v: "6.2 px", pct: 46 },
+        { type: "row", k: "tippe", v: "—" },
+        { type: "row", k: "kolmnurki", v: "—" },
+        { type: "note", t: "Kolmnurk jäetakse alles siis, kui tema keskpunkt on siluetist sees — sama reegel mis animus-core-is." }
+      ]
+    },
+    {
+      tool: 1,
+      insTitle: "Luu",
+      hint: "Lohista liigest — puhkeasend muutub. Proovi kätt.",
+      mode: "redigeerimine",
+      inspector: [
+        { type: "row", k: "nimi", v: "kaisi_ala" },
+        { type: "row", k: "a → b", v: "j5 → j6" },
+        { type: "slider", k: "jäikus", v: "0.72", pct: 72, learn: true },
+        { type: "slider", k: "sumbuvus", v: "0.975", pct: 88, learn: true },
+        { type: "slider", k: "kinnitusraadius", v: "26 px", pct: 52 },
+        { type: "row", k: "mõjutab tippe", v: "184" },
+        { type: "note", t: "Kinnitus on automaatne, raadiuse järgi. Kaalumise pintsel tuleb hiljem." }
+      ]
+    },
+    {
+      tool: 0,
+      insTitle: "Solver",
+      hint: "Tõmba käest ja lase lahti — see on päris füüsika",
+      mode: "esitus",
+      inspector: [
+        { type: "row", k: "sagedus", v: "120 Hz" },
+        { type: "slider", k: "üldine jäikus", v: "0.72", pct: 72, learn: true },
+        { type: "slider", k: "gravitatsioon", v: "0.00", pct: 0, learn: true },
+        { type: "slider", k: "iteratsioone", v: "8", pct: 40 },
+        { type: "head", t: "Väljund" },
+        { type: "row", k: "ekraan", v: "DISPLAY2" },
+        { type: "row", k: "vsync", v: "sees" },
+        { type: "note", t: "Lohistamine ei kirjuta dokumenti. See seab sihtmärgi ja solver vastab — nagu laval." }
+      ]
+    }
+  ];
+
+  function el(tag, cls, txt) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (txt != null) e.textContent = txt;
+    return e;
+  }
+
+  function renderTools(sel) {
+    var host = document.getElementById("tools");
+    host.innerHTML = "";
+    TOOLS.forEach(function (t, i) {
+      var d = el("div", "tool" + (i === sel ? " sel" : ""));
+      d.appendChild(el("span", null, t[0]));
+      d.appendChild(el("span", "key", t[1]));
+      host.appendChild(d);
+    });
+  }
+
+  function renderInspector(items) {
+    var host = document.getElementById("inspector");
+    host.innerHTML = "";
+    items.forEach(function (it) {
+      if (it.type === "row") {
+        var r = el("div", "row");
+        r.appendChild(el("span", "k", it.k));
+        r.appendChild(el("span", "v", it.v));
+        host.appendChild(r);
+      } else if (it.type === "head") {
+        var h = el("div", "panelhead");
+        h.style.margin = "4px -12px 0";
+        h.appendChild(el("span", null, it.t));
+        host.appendChild(h);
+      } else if (it.type === "slider") {
+        var s = el("div", "slider");
+        var top = el("div", "row");
+        var kk = el("span", "k", it.k);
+        top.appendChild(kk);
+        var right = el("span", "row");
+        right.style.gap = "6px";
+        right.appendChild(el("span", "v", it.v));
+        if (it.learn) right.appendChild(el("span", "learn", "◎"));
+        top.appendChild(right);
+        var track = el("div", "track");
+        var fill = el("div", "fill"); fill.style.width = it.pct + "%";
+        var knob = el("div", "knob"); knob.style.left = it.pct + "%";
+        track.appendChild(fill); track.appendChild(knob);
+        s.appendChild(top); s.appendChild(track);
+        host.appendChild(s);
+      } else if (it.type === "seg") {
+        var seg = el("div", "row");
+        seg.style.gap = "4px";
+        it.opts.forEach(function (o, i) {
+          var b = el("div", "item" + (i === it.sel ? " sel" : ""), o);
+          b.style.flex = "1";
+          b.style.fontSize = "12px";
+          b.style.justifyContent = "center";
+          seg.appendChild(b);
+        });
+        host.appendChild(seg);
+      } else if (it.type === "note") {
+        var n = el("p", null, it.t);
+        n.style.fontSize = "11.5px";
+        n.style.lineHeight = "1.5";
+        n.style.color = "var(--app-muted)";
+        n.style.margin = "2px 0 0";
+        host.appendChild(n);
+      }
+    });
+  }
+
+  var CALLOUTS = [
+    [["Läbipaistvusega PNG, ja ainult see", "M1 loeb PNG-d alfakanaliga. Assetihoidla on sisupõhine — sama pilt kaks korda võtab ruumi ühe korra."],
+     ["Läbipaistmatu pilt lükatakse tagasi", "Mitte vaikselt ristkülikuna, vaid teatega, mis ütleb mida teha: eemalda taust ja salvesta PNG-na. Sama tekst on ka see koht, kuhu tulevane matt-samm hiljem kinnitub."]],
+    [["Siluett enne võrku", "Alfa lävi → sulgemine → kontuuri lihtsustus. Alles siis kolmnurgad. Iga liuguri liigutus näitab tulemust kohe, sest kogu ahel on kiire ja Bevy-vaba."],
+     ["Kolmnurk jääb keskpunkti järgi", "Delaunay katab ka augud ja lohud; alles jäetakse ainult need kolmnurgad, mille keskpunkt on siluetist sees. Sama reegel on juba animus-core-is olemas."]],
+    [["Liigesed on punktmassid, luud on vedrud", "Hierarhiat ei ole. Luu ühendab kaks liigest ja ainult luul on suund — sellepärast käib nahkimine luude, mitte liigeste järgi."],
+     ["Kinnitus tuleb raadiusest", "Iga tipp seotakse lähedaste luudega, kaal langeb kauguse järgi, alles jääb neli tugevaimat. Oranž ring näitab raadiust, mida liuguriga muudad."]],
+    [["Lohistamine ei kirjuta dokumenti", "Live-režiimis läheb hiir solverisse sihtmärgina. Nukk vetrub, jääb maha ja tuleb tagasi — see, mida sa proovides näed, ongi see, mis laval juhtub."],
+     ["Paremal all on projektor", "Sama nukk, samal hetkel, ilma ühegi abijooneta. Luud ja võrk elavad eraldi renderduskihil, mida väljundkaamera ei näe."]]
+  ];
+
+  function renderCallouts() {
+    var host = document.getElementById("callouts");
+    host.innerHTML = "";
+    CALLOUTS[stage].forEach(function (c, i) {
+      var d = el("div", "callout");
+      d.appendChild(el("div", "n", String(i + 1)));
+      var box = el("div");
+      var t = el("p", "t", c[0]);
+      var p = el("p", null, c[1]);
+      box.appendChild(t); box.appendChild(p);
+      d.appendChild(box);
+      host.appendChild(d);
+    });
+  }
+
+  function setStage(i) {
+    stage = i;
+    var s = STAGES[i];
+    document.querySelectorAll(".stagetab").forEach(function (b) {
+      b.setAttribute("aria-selected", String(Number(b.dataset.stage) === i));
+    });
+    document.getElementById("insTitle").textContent = s.insTitle;
+    document.getElementById("hint").textContent = s.hint;
+    document.getElementById("st-mode").innerHTML = "režiim: <span class=\"" +
+      (s.mode === "esitus" ? "on" : "warn") + "\">" + s.mode + "</span>";
+    document.getElementById("pip").hidden = (i !== 3);
+    renderTools(s.tool);
+    renderInspector(s.inspector);
+    renderCallouts();
+    hud.textContent = hudBase();
+
+    // live vertex/triangle counts on the mesh stage
+    if (i === 1) {
+      var rows = document.querySelectorAll("#inspector .row");
+      rows.forEach(function (r) {
+        var k = r.querySelector(".k").textContent;
+        if (k === "tippe") r.querySelector(".v").textContent = String(MESH.pts.length);
+        if (k === "kolmnurki") r.querySelector(".v").textContent = String(MESH.tris.length);
+      });
+    }
+    if (i !== 3) { userTouched = false; t0 = performance.now(); }
+  }
+
+  document.querySelectorAll(".stagetab").forEach(function (b) {
+    b.addEventListener("click", function () { setStage(Number(b.dataset.stage)); });
+  });
+
+  setStage(0);
+  requestAnimationFrame(frame);
+})();
+</script>

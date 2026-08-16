@@ -40,30 +40,21 @@ New, and each one is a bug this project already made once:
 
 ---
 
-## Open decision, needed before Task 3
+## Decision taken: PNG with alpha, and the door left open
 
-### The alpha problem
+**Decided by the user, 2026-08-17.** M1 accepts **PNG with an alpha channel** and nothing else. No matte generation, no flood fill, no segmentation. An operator who has a JPEG removes the background in the tool they already use.
 
-`silhouette::extract` thresholds the alpha channel. Of the user's five real test images, **three are JPEGs with no alpha at all**, one is a PNG with alpha, one is AVIF. Today a JPEG import yields a rectangle the size of the image — technically a successful import, practically useless. Spec §18 says "Import PNG"; the actual inputs disagree.
+The reason this is the right call and not a shortcut: every alternative buys reach at the cost of the one thing M1 has to prove — that image in, puppet out, on a projector, actually works end to end. Background removal is a whole feature with its own failure modes, and it is not what makes this tool worth using.
 
-Note also that `image` is deliberately feature-narrowed to PNG (spec §3.1, and `imageproc` must stay `default-features = false` to keep it that way), so **AVIF does not decode today and that is by design.** Widening it drags in the AVIF and OpenEXR codec stacks.
+**But the requirement attached to it is real: adding formats later must be a small change, not a rewrite.** That is a design constraint on Task 2, and it is cheap to honour now and expensive to retrofit.
 
-Four ways out, not mutually exclusive:
+Three doors, held open by construction:
 
-| Option | Cost | Works on |
-|---|---|---|
-| **A. Require alpha.** Import rejects an opaque image with a clear message pointing at the background-removal step the operator already knows. | Nearly free | Cutout PNGs only |
-| **B. Border flood-fill matte.** Seed from the image border, expand by colour distance with a tolerance slider and live preview, write the result as the alpha channel. | ~150 lines, no new dependency, deterministic, testable headlessly | Flat or near-flat backgrounds — most cutout art and studio-white stock photos |
-| **C. Manual outline.** The operator clicks the silhouette polygon; the mesh is built from that. Manual mesh editing is a stated M6 feature, so this is early rather than extra. | Moderate UI work | Anything, including photographs |
-| **D. ML segmentation** (U2Net/rembg class, ONNX). | ~40–170 MB of model plus a runtime, and a build story on three platforms | Photographs, well |
+1. **Decoding.** All image loading goes through one `decode` module with an explicit format table, not scattered `image::open` calls. Adding AVIF or JPEG later is a feature flag plus one row. `image` stays feature-narrowed to PNG (spec §3.1) and `imageproc` stays `default-features = false`, so the AVIF and OpenEXR codec stacks stay out of the build until someone asks for them.
+2. **The alpha source.** `MeshPuppet` carries `MatteParams { mode: MatteMode }` from day one, with `MatteMode::UseImageAlpha` as the only variant M1 implements. Because the field exists in the **v1 file format** from the first save, adding `BorderFloodFill` later is a new enum value in an existing field — a value addition, not a schema change, and therefore no migration.
+3. **The failure message.** An opaque image is rejected with a message that names the actual problem and the actual fix, not a silent rectangle. That message is also where a future matte step gets offered.
 
-**Recommendation: A + B for M1, C in M6, D never in-process** — offer it as an external step. B covers the actual test set, is deterministic enough to unit-test, and adds no dependency.
-
-**Design point worth settling with it:** do not modify the operator's file. Store the *parameters* — seed corners, tolerance, feather — in `MeshPuppet` beside `AutoMeshParams`, and derive the matte at import and on every reopen. The asset store stays content-addressed and honest, the matte stays re-editable, and reopening a project reproduces the same silhouette by construction.
-
-- [ ] **Decision required from the user before Task 3 begins.** Tasks 1 and 2 do not depend on it.
-
----
+**Explicitly not in M1:** border flood-fill, chroma key, manual outline, ML segmentation. Manual outline arrives with manual mesh editing in M6; the rest stay out of process.
 
 ## File Structure
 
@@ -73,7 +64,7 @@ Four ways out, not mutually exclusive:
 |---|---|
 | `crates/animus-core/src/doc/command.rs` | `DocCommand`, `DocChange`, `PendingChanges`, `apply_command` |
 | `crates/animus-core/src/doc/undo.rs` | `UndoStack` with merge, entry cap and memory cap |
-| `crates/animus-core/src/matte/` | Border flood-fill matte (pending the decision above) |
+| `crates/animus-core/src/image_in/` | Decode table, import errors, `MatteParams` |
 | `crates/animus-runtime/` | Bevy: doc→ECS projection, `build_skinned_mesh`, solver driver, writeback |
 | `crates/animus-editor/` | Bevy + egui: dock, theme, viewport, tools, gizmos, inspector, undo UI |
 | `crates/animus-output/` | Bevy: output window, monitor selection, vsync toggle, layer isolation |
@@ -109,27 +100,32 @@ Nothing in M1 can edit anything until this exists, and §18 flags it as required
 
 ---
 
-## Task 2: Core — matte generation for images without alpha
+## Task 2: Core — the import contract, and the hinges for later formats
 
-**Blocked on the open decision.** Assumes A + B.
+Small task, and the whole point of it is what it makes possible later.
 
-**Files:** create `crates/animus-core/src/matte/{mod.rs,floodfill.rs}`; modify `doc/mesh_puppet.rs`, `silhouette/mod.rs`
+**Files:** create `crates/animus-core/src/image_in/{mod.rs,decode.rs,matte.rs}`; modify `doc/mesh_puppet.rs`, `silhouette/mod.rs`
 
 **Interfaces:**
-- `pub struct MatteParams { pub mode: MatteMode, pub tolerance: f32, pub feather_px: f32, pub seeds: Vec<UVec2> }`
-- `pub enum MatteMode { UseImageAlpha, BorderFloodFill, None }`
-- `pub fn apply_matte(img: &mut RgbaImage, params: &MatteParams) -> MatteReport`
-- `MatteReport { pub covered_fraction: f32, pub touched_border: bool }` — enough for the UI to warn "this removed 98% of the image" before the operator is confused by an empty puppet.
+- `pub enum ImageFormat { Png }` — the table that later grows
+- `pub fn decode(bytes: &[u8], name: &str) -> Result<RgbaImage, ImportError>`
+- `pub enum ImportError { UnsupportedFormat { ext: String }, NoAlphaChannel, FullyTransparent, TooLarge { w: u32, h: u32 } }`
+- `pub struct MatteParams { pub mode: MatteMode }` and `pub enum MatteMode { UseImageAlpha }`
+- `pub fn resolve_alpha(img: &mut RgbaImage, params: &MatteParams) -> Result<MatteReport, ImportError>`
+- `pub fn is_effectively_opaque(img: &RgbaImage) -> bool`
 
-- [ ] **Step 1: Failing tests** on generated fixtures: a red disc on flat white → matte covers the disc within 1% area; a disc on a gradient → tolerance must be raised, and the report says so; an image whose subject touches the border → `touched_border` true; a fully-uniform image → `covered_fraction` ~0 and a clear error rather than a silent empty mesh.
-- [ ] **Step 2: Scanline flood fill from all four borders**, colour distance in linear RGB, tolerance in the same units as the UI slider.
-- [ ] **Step 3: Feather** — distance-transform based, reusing the `imageproc` items already vendored, so no new dependency.
-- [ ] **Step 4: `MeshPuppet` carries `MatteParams`**; a helper resolves image → matte → `silhouette::extract` in one call so the editor and the loader cannot diverge.
-- [ ] **Step 5: Detection helper** `fn is_effectively_opaque(img) -> bool`, used by the import UI to decide whether to open the matte step at all.
+- [ ] **Step 1: Failing tests**
+  - a PNG with alpha imports and its silhouette is not the image rectangle
+  - a fully opaque PNG returns `NoAlphaChannel` — **not** a rectangle mesh
+  - a fully transparent PNG returns `FullyTransparent`
+  - a `.jpg` returns `UnsupportedFormat { ext: "jpg" }`, naming the extension
+  - `MatteParams` round-trips through save/load with `mode: "image_alpha"`
+- [ ] **Step 2: The decode table.** One module, one match on format, one error type. No `image::open` anywhere else in the codebase — a lint-level rule, because this is exactly the kind of thing that gets scattered by the third contributor.
+- [ ] **Step 3: `resolve_alpha`** with the single `UseImageAlpha` arm, returning `MatteReport { covered_fraction, touched_border }`. The report is unused in M1 beyond a sanity warning; it exists so a matte mode can populate it later without changing the call site.
+- [ ] **Step 4: Serialize `MatteParams` into the v1 format** and add it to `spec/animus-project-format-v1.md` as an object with a `mode` string, documenting that unknown modes are a load error and new modes are additive. **This is the step that makes format work later cheap** — do not skip it because the enum has one variant.
+- [ ] **Step 5: The rejection message.** `NoAlphaChannel` renders as: *"This image has no transparency, so there is nothing to cut out. Remove the background first and save as PNG."* Write it once, in core, so the editor and any future CLI say the same thing.
 
-**Done when:** a JPEG of a subject on a flat background produces a silhouette that is not the image rectangle, deterministically, with no GPU and no network.
-
----
+**Done when:** a PNG with alpha becomes a silhouette, everything else fails with a message a person can act on, and adding a second format touches exactly two places — the format table and the feature flag.
 
 ## Task 3: `animus-runtime` — the skinning build
 
@@ -217,10 +213,10 @@ The user-visible spine of M1: image in, puppet out.
 **Files:** `src/import.rs`, `src/panels/assets.rs`
 
 - [ ] **Step 1:** Drag-and-drop and a file dialog; import through `animus_project::AssetStore` so the asset is content-addressed.
-- [ ] **Step 2: The matte step** — if `is_effectively_opaque`, open the matte controls with a live preview before triangulating; otherwise use the alpha directly. Show `MatteReport` as plain language.
+- [ ] **Step 2: Reject early and clearly.** An opaque or transparent image never reaches triangulation; the import dialog shows the `ImportError` message and stops. This is the surface a matte step would later plug into.
 - [ ] **Step 3:** `silhouette::extract` → `triangulate` → `MeshData`, with the `AutoMeshParams` controls (alpha threshold, close radius, RDP epsilon, min region area, interior spacing) live-previewed against the actual mesh.
 - [ ] **Step 4:** The whole import is **one** `ImportImage` snapshot command, so a bad import is one Ctrl+Z.
-- [ ] **Step 5:** Failure paths as messages, never panics: fully transparent image, fully opaque image with no matte, image larger than the GPU's max texture size, unsupported format (AVIF today — say so explicitly rather than failing to decode).
+- [ ] **Step 5:** Failure paths as messages, never panics: fully transparent image, fully opaque image with no matte, image larger than the GPU's max texture size, unsupported format — name the extension and say PNG is what M1 reads.
 
 ---
 
@@ -300,7 +296,7 @@ M0-4 is the reference implementation, including its bug.
 
 ## Done Criteria for This Plan
 
-- [ ] A JPEG with no alpha becomes a rigged, deformable puppet without leaving the app
+- [ ] A PNG with alpha becomes a rigged, deformable puppet; everything else fails with a message naming the fix
 - [ ] Dragging a joint in live mode deforms the mesh organically and leaves the document untouched
 - [ ] The puppet renders on a second display with no editor gizmos, at the display's refresh rate, with vsync switchable
 - [ ] Save, quit, reopen — identical project, including ID allocation state
