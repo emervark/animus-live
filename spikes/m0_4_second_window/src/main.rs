@@ -27,13 +27,18 @@ use bevy::camera::RenderTarget;
 use bevy::camera::visibility::RenderLayers;
 use bevy::color::palettes::basic::{LIME, YELLOW};
 use bevy::prelude::*;
-use bevy::window::{Monitor, PresentMode, WindowMode, WindowRef};
+use bevy::window::{Monitor, PresentMode, PrimaryMonitor, WindowMode, WindowRef};
 
 #[derive(Resource, Debug, Clone)]
 struct SpikeArgs {
     editor_vsync: PresentMode,
     output_vsync: PresentMode,
     auto_close_frames: Option<u32>,
+    /// Force the output window onto the monitor at this enumeration index,
+    /// overriding the not-the-primary-monitor rule. The escape hatch for a
+    /// venue where the projector reports as primary, or where the automatic
+    /// choice is wrong for any other reason.
+    output_monitor: Option<usize>,
 }
 
 fn parse_present_mode(s: &str) -> PresentMode {
@@ -49,6 +54,7 @@ impl SpikeArgs {
         let mut editor_vsync = PresentMode::AutoVsync;
         let mut output_vsync = PresentMode::AutoVsync;
         let mut auto_close_frames = None;
+        let mut output_monitor = None;
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
@@ -68,6 +74,10 @@ impl SpikeArgs {
                     i += 1;
                     auto_close_frames = args.get(i).and_then(|s| s.parse().ok());
                 }
+                "--output-monitor" => {
+                    i += 1;
+                    output_monitor = args.get(i).and_then(|s| s.parse().ok());
+                }
                 other => eprintln!("[m0-4] ignoring unrecognized arg: {other}"),
             }
             i += 1;
@@ -76,6 +86,7 @@ impl SpikeArgs {
             editor_vsync,
             output_vsync,
             auto_close_frames,
+            output_monitor,
         }
     }
 }
@@ -176,7 +187,10 @@ fn setup_scene_assets(
     // (gizmo overlay).
     commands.spawn((
         Camera3d::default(),
-        Camera { order: 0, ..default() },
+        Camera {
+            order: 0,
+            ..default()
+        },
         Transform::from_xyz(4.0, 3.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
         RenderLayers::from_layers(&[0, 1]),
         WindowFrameStats::default(),
@@ -185,7 +199,7 @@ fn setup_scene_assets(
 
 fn spawn_output_window(
     mut commands: Commands,
-    monitors: Query<(Entity, &Monitor)>,
+    monitors: Query<(Entity, &Monitor, Option<&PrimaryMonitor>)>,
     mut gizmo_store: ResMut<GizmoConfigStore>,
     args: Res<SpikeArgs>,
 ) {
@@ -193,13 +207,37 @@ fn spawn_output_window(
     gizmo_config.render_layers = RenderLayers::layer(1);
 
     let monitor_count = monitors.iter().count();
-    // Pick a monitor other than the one the primary window is already on,
-    // if there is one. We don't know which monitor the primary landed on
-    // without querying `Window::monitor`; simplest robust rule for a spike:
-    // if there's more than one monitor, use the second one enumerated.
-    let second_monitor = monitors.iter().nth(1).map(|(e, _)| e);
 
-    let (window, note) = if let Some(monitor_entity) = second_monitor {
+    // Choosing "the second monitor enumerated" is wrong, and wrong in the
+    // worst way: it works on the machine you wrote it on and puts the output
+    // on the operator's screen somewhere else. Enumeration order is not
+    // specified and does not put the primary first -- on the machine this was
+    // caught on, `\.\DISPLAY2` (the TV) enumerated first and DISPLAY1 (the
+    // laptop panel) second, so `nth(1)` selected the laptop and covered the
+    // editor with a fullscreen output window that cannot be dragged away.
+    //
+    // Select by the property that is actually meant: the monitor that is not
+    // the primary one. `--output-monitor <index>` overrides it, because at a
+    // venue the display that reports as primary is not always the one the
+    // projector is on.
+    let chosen = if let Some(index) = args.output_monitor {
+        monitors.iter().nth(index).map(|(e, m, _)| (e, m))
+    } else {
+        monitors
+            .iter()
+            .find(|(_, _, primary)| primary.is_none())
+            .map(|(e, m, _)| (e, m))
+    };
+
+    let (window, note) = if let Some((monitor_entity, monitor)) = chosen {
+        let chosen_name = monitor.name.clone().unwrap_or_else(|| "<unnamed>".into());
+        let chosen_desc = format!(
+            "{chosen_name} {}x{}px @ {:.1}Hz scale={:.2}",
+            monitor.physical_width,
+            monitor.physical_height,
+            monitor.refresh_rate_millihertz.unwrap_or(0) as f32 / 1000.0,
+            monitor.scale_factor,
+        );
         (
             Window {
                 title: "m0-4 OUTPUT".into(),
@@ -210,7 +248,7 @@ fn spawn_output_window(
                 present_mode: args.output_vsync,
                 ..default()
             },
-            "second monitor detected: opening BorderlessFullscreen on it".to_string(),
+            format!("opening BorderlessFullscreen on {chosen_desc}"),
         )
     } else {
         (
@@ -322,7 +360,11 @@ fn auto_close_and_report(
     };
     if frame_counter.0 == target {
         for s in &stats {
-            let avg = if s.frames > 0 { s.sum_dt_ms / s.frames as f64 } else { 0.0 };
+            let avg = if s.frames > 0 {
+                s.sum_dt_ms / s.frames as f64
+            } else {
+                0.0
+            };
             let fps = if avg > 0.0 { 1000.0 / avg } else { 0.0 };
             println!(
                 "[m0-4] window camera stats: frames={} avg_dt_ms={avg:.3} min_dt_ms={:.3} max_dt_ms={:.3} approx_fps={fps:.1}",

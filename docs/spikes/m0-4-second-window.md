@@ -139,9 +139,17 @@ not measured here -- **user checklist item**.
 
 ## User checklist — needs a second display/projector attached
 
+- [x] **Layer isolation — VERIFIED 2026-08-16.** TV shows only the rotating
+      cube; the green wireframe gizmo is present in the editor window and
+      completely absent from the output window.
 - [ ] **Layer isolation, by eye.** With a second monitor attached, confirm
       the wireframe gizmo cube is visible in the editor window and
       **completely absent** from the output window.
+- [x] **Real monitor selection — VERIFIED 2026-08-16, after fixing a bug
+      that put the output on the wrong screen.** See "The output window
+      opened on the wrong monitor". Now lands borderless and full-bleed on
+      the second display, confirmed both by eye and by reading the window
+      rectangles.
 - [ ] **Real monitor selection.** Confirm the output window actually lands
       on the second monitor via `BorderlessFullscreen(MonitorSelection::Entity(..))`
       -- correct position, correct size, no title bar, no border.
@@ -155,6 +163,12 @@ not measured here -- **user checklist item**.
       and confirm it still looks correct on the real second display -- this
       is the escape hatch for a projector with a wrong/missing EDID at a
       venue, so it needs to be known-good before it's needed live.
+- [x] **Esc-to-close — VERIFIED 2026-08-16.** With the output window
+      genuinely fullscreen-borderless on the second display, Esc despawns it
+      cleanly; nothing is left on screen. This matters more than it looks:
+      the window is undecorated and always-on-top, so a failed despawn would
+      strand a black rectangle on the projector with no way to close it by
+      mouse.
 - [ ] **Esc-to-close on a real fullscreen borderless window.** With the
       output window focused and actually fullscreen-borderless (not the
       single-monitor windowed fallback), press Esc and confirm the window
@@ -203,3 +217,120 @@ The single-monitor fallback path fired again and logged it:
 [m0-4]   monitor 369v0: name="\.\DISPLAY1" pos=(0, 0) size=2560x1600px refresh=165.0Hz scale=1.25
 [m0-4] monitors detected: 1. only one monitor present: opening windowed-borderless
 ```
+
+## The output window opened on the wrong monitor
+
+With a second display finally attached (a 4K TV over HDMI), the output
+window opened **borderless-fullscreen on the laptop panel**, covering the
+editor with a window that cannot be dragged away because it has no
+decorations and the cursor is hidden.
+
+The bug is in this spike, not in Bevy. `spawn_output_window` chose
+`monitors.iter().nth(1)` — "the second monitor enumerated" — with a comment
+admitting it was the simplest rule available. Enumeration order is not
+specified and does not put the primary first. The actual order here:
+
+```
+[m0-4]   monitor 370v0: name="\.\DISPLAY2" pos=(2560, 0) size=3840x2160px refresh=30.0Hz scale=3.00
+[m0-4]   monitor 369v0: name="\.\DISPLAY1" pos=(0, 0) size=2560x1600px refresh=165.0Hz scale=1.25
+```
+
+The TV enumerated **first**, so `nth(1)` selected the laptop panel. Bevy did
+exactly what it was told.
+
+This is the worst shape a bug can take for this project: it works on the
+machine it was written on, and at a venue it covers the operator's screen
+with an undismissable fullscreen window minutes before a show.
+
+Fixed by selecting on the property actually meant — the monitor without the
+`PrimaryMonitor` marker — and logging the chosen monitor's name, size,
+refresh rate and scale factor. Added `--output-monitor <index>` as an
+override, because the display that reports as primary at a venue is not
+always the one the projector is on.
+
+Verified 2026-08-16 by reading the real window rectangles:
+
+| Window | Position | Size | Display |
+|---|---|---|---|
+| `m0-4 OUTPUT` | x=2048 | 1280x720 logical (3840x2160 physical) | TV |
+| `m0-4 EDITOR` | x=205 | 974x638 | laptop |
+
+**Layer isolation confirmed by eye**: the TV shows only the rotating cube;
+the green wireframe gizmo appears in the editor window alone. Borderless and
+full-bleed on the TV, no title bar.
+
+## A 30fps cap that was not what it looked like
+
+Re-running the vsync matrix with the TV attached produced ~28.5fps in every
+row, including both windows on `AutoNoVsync`. The obvious reading — that a
+30Hz output display drags the whole application down — was wrong, and so was
+the second guess that the TV's mere presence was responsible.
+
+A control run settled it: **m0-1, a single window on the 165Hz laptop panel,
+also measured exactly 30.00fps** with the TV attached, and *still* did after
+the TV was switched off in Windows. The machine was on battery at 35%, and
+30.00fps / 33.33ms is the signature of a power-saving frame limiter, not of
+load. With the charger connected — the HDMI cable still attached — the same
+binary measured 350-358fps.
+
+**The vsync table measured with the TV attached is therefore void**: every
+row was clamped by the battery limiter, not by vsync or by window coupling.
+
+**Methodological finding, and it applies to every measurement in these
+documents taken on this laptop: record the power state.** A benchmark that
+does not is not reproducible here, because the machine silently changes
+performance mode partway through a session. Spot the limiter by its
+signature — a suspiciously exact frame rate (30.00fps) with a near-zero
+spread — rather than by trusting that the number reflects the code.
+
+Re-measured on AC, the 4K Spout result from M0-3 survives the same scrutiny
+(53-55fps at 4K, 97-128fps at 1080p), so that conclusion stands.
+
+
+## Vsync coupling, measured properly (AC power, 30Hz TV active)
+
+The table above, taken on battery, is void. Re-measured with the charger
+connected and the TV live as a `BorderlessFullscreen` output:
+
+| Editor `PresentMode` | Output `PresentMode` | App frame rate |
+|---|---|---|
+| Vsync | Vsync | 29.4 fps |
+| AutoNoVsync | Vsync | 28.9 fps |
+| AutoNoVsync | AutoNoVsync | **184.8 fps** |
+| Vsync | AutoNoVsync | **138.0 fps** |
+
+**Only the output window's present mode matters.** With the output window
+synced to the 30Hz TV, the entire application — including the editor on a
+165Hz panel — runs at ~29fps. The editor's own setting changes nothing.
+Turning vsync off on the output alone restores 138-185fps.
+
+The rule, stated generally: **the application's frame rate is set by the
+slowest vsync-enabled window.** This is a sharper answer than the
+single-monitor session could reach, where both windows sat on the same 165Hz
+panel and every configuration looked similar. It also replaces the earlier
+mitigation sketch (render the editor view every other frame), which
+addresses editor cost — not the presentation coupling that actually causes
+this.
+
+Tearing with the output on `AutoNoVsync` was checked by eye on the TV:
+present, but slight.
+
+## Decision for M1: vsync is the operator's switch
+
+Taken with the user 2026-08-16:
+
+- **Expose vsync as a user-facing toggle on the output window.** It is a
+  trade-off with no universally right answer — a tear-free projector at the
+  cost of an editor clamped to the projector's refresh, or a fast editor
+  with some tearing — and live-visuals operators already understand it.
+  Animata-class tools let the operator make this call.
+- **Expect Spout to be the path most operators actually use**, which sidesteps
+  the coupling entirely: another process owns the projector window, and this
+  application never synchronises to that display. M0-3 measured that path at
+  ~1.2ms per frame at 1080p.
+- The direct second-window output stays for the case where no compositor is
+  in the chain.
+
+Context for the numbers: the display used here was a hotel TV at 4K/30Hz,
+close to the worst case obtainable. Projectors and LED walls in normal use
+run at higher refresh rates, so 29fps is a floor, not a typical figure.
