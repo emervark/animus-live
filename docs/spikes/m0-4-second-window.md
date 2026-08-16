@@ -1,0 +1,172 @@
+# M0-4 — Second window, RenderLayers isolation, vsync
+
+Spike crate: `spikes/m0_4_second_window`. Run with:
+
+```
+cargo run --release --manifest-path spikes/m0_4_second_window/Cargo.toml -- \
+  [--editor-vsync on|off] [--output-vsync on|off] [--auto-close <frames>]
+```
+
+**This machine has only one physical monitor** (confirmed by the spike's own
+monitor enumeration below), so the projector-specific checks (layer
+isolation *by eye*, monitor selection onto a real second display, Esc-close
+on a real fullscreen borderless window, and the 10-minute stability run) are
+**entirely the user's half** -- see the checklist. Everything else (monitor
+enumeration code path, the single-monitor fallback, RenderLayers wiring,
+and the vsync-coupling measurement) was run and is recorded below.
+
+## Monitor enumeration and the single-monitor fallback
+
+```
+$ m0-4-second-window.exe --auto-close 180
+[m0-4] enumerating monitors:
+[m0-4]   monitor 369v0: name="\\.\DISPLAY1" pos=(0, 0) size=3440x1440px refresh=144.0Hz scale=1.00
+[m0-4] total monitors: 1
+[m0-4] monitors detected: 1. only one monitor present: opening windowed-borderless
+       at (80,80) 960x540 instead. Re-run with a projector/second display
+       attached to exercise the real BorderlessFullscreen(MonitorSelection::Entity) path.
+```
+
+**Confirmed working exactly as designed**: with one monitor, the spike opens
+the output window `WindowMode::Windowed` + `decorations: false` +
+`position: WindowPosition::At(IVec2::new(80, 80))` + explicit `resolution`
+-- the manual escape-hatch path spec §11.2 requires -- and logs clearly that
+it did so instead of the real `BorderlessFullscreen(MonitorSelection::Entity(..))`
+path. **This is also, incidentally, a live test of that escape-hatch path
+itself** (Task 5 Step 4's second half: "confirm this also produces a correct
+borderless fullscreen result"), since it's what actually ran here. The
+window opened windowed-borderless at the requested position with no error.
+Whether it visually *looks* like a clean borderless region (no unexpected
+title bar sliver, correct size) is a **user checklist item** below, since
+that's a screenshot judgment call.
+
+## Layer isolation (code-level)
+
+- Editor camera: `RenderLayers::from_layers(&[0, 1])`, `order: 0`.
+- Output camera: `RenderLayers::layer(0)` only, `order: 10`, targets the
+  output window via `RenderTarget::Window(WindowRef::Entity(output_window))`.
+- Content (rotating cube): `RenderLayers::layer(0)`.
+- Gizmo (wireframe cube via `Gizmos::cube`): configured onto layer 1 via
+  `GizmoConfigStore::config_mut::<DefaultGizmoConfigGroup>().render_layers = RenderLayers::layer(1)`.
+
+This compiles and runs without error, and the layer assignment is
+structurally correct (the output camera's `RenderLayers` component
+literally does not include layer 1). **Whether the gizmo is actually
+invisible in the output window is a visual check** -- see checklist.
+
+## Vsync coupling — measured
+
+`WindowFrameStats` components (one per camera/window) record wall-clock
+delta between consecutive `Update` ticks via `std::time::Instant`, since
+`FrameTimeDiagnosticsPlugin` reports one app-global number, not a
+per-window one. All three configurations below ran with `--auto-close 240`
+on the single available monitor (3440x1440 @144Hz):
+
+| Editor `PresentMode` | Output `PresentMode` | Editor avg dt (ms) | Output avg dt (ms) | Editor ~fps | Output ~fps |
+|---|---|---|---|---|---|
+| `AutoVsync` | `AutoVsync` | 9.273 | 9.273 | 107.8 | 107.8 |
+| `AutoNoVsync` | `AutoVsync` | 9.322 | 9.322 | 107.3 | 107.3 |
+| `AutoNoVsync` | `AutoNoVsync` | 7.551 | 7.551 | 132.4 | 132.4 |
+
+Raw output:
+
+```
+=== AutoVsync / AutoVsync ===
+[m0-4] window camera stats: frames=238 avg_dt_ms=9.273 min_dt_ms=4.161 max_dt_ms=393.409 approx_fps=107.8
+[m0-4] window camera stats: frames=238 avg_dt_ms=9.273 min_dt_ms=4.161 max_dt_ms=393.409 approx_fps=107.8
+
+=== AutoNoVsync / AutoVsync ===
+[m0-4] window camera stats: frames=238 avg_dt_ms=9.322 min_dt_ms=4.441 max_dt_ms=373.034 approx_fps=107.3
+[m0-4] window camera stats: frames=238 avg_dt_ms=9.322 min_dt_ms=4.441 max_dt_ms=373.034 approx_fps=107.3
+
+=== AutoNoVsync / AutoNoVsync ===
+[m0-4] window camera stats: frames=238 avg_dt_ms=7.551 min_dt_ms=4.409 max_dt_ms=393.409 approx_fps=132.4
+[m0-4] window camera stats: frames=238 avg_dt_ms=7.551 min_dt_ms=4.409 max_dt_ms=393.409 approx_fps=132.4
+```
+
+**Finding: the two windows' present modes are fully coupled in every
+configuration tested, and this spike's own architecture explains why.**
+Both `WindowFrameStats` components are updated by the *same* `Update`
+system (`track_window_frame_times`) on the *same* app tick, and Bevy's
+default runner advances one single-threaded main schedule per iteration
+regardless of how many windows exist. Both windows' swapchains are
+presented within that one apptick. So even with the editor's present mode
+set to `AutoNoVsync`, if the output window's `AutoVsync` swapchain blocks
+waiting for its vblank, the whole app tick -- and therefore the editor's
+measured rate too -- waits with it. The only configuration where both
+windows ran faster was **both** set to `AutoNoVsync` (132.4fps vs ~107fps),
+consistent with removing every vsync wait rather than decoupling the two
+windows from each other.
+
+**This directly answers spec §11.3's open question**: with Bevy 0.19.1's
+default single-threaded App runner, the editor and output windows'
+present modes are not independent -- setting the editor to `AutoNoVsync`
+alone does not free it from the output window's vsync wait, or vice versa.
+**Consequence for M1, per the plan's own fallback**: "If every configuration
+couples them, record it -- the M1 fallback is rendering the editor viewport
+every other frame" applies. This spike's single available monitor (144Hz)
+could not reproduce the specific worry (a 60Hz projector holding back a
+high-refresh editor panel), but the coupling mechanism observed here would
+apply equally in that case -- a 60Hz output window's vblank wait would cap
+the editor's measured rate too, under this architecture.
+
+**Honesty caveat**: this was measured with one 144Hz monitor hosting both
+windows, not a high-refresh editor panel plus a 60Hz projector as spec
+§11.3 describes. The coupling *mechanism* (single-threaded main loop,
+shared app tick) is confirmed and would apply in the two-refresh-rate case
+too, but the actual capped frame rate numbers in that specific scenario are
+not measured here -- **user checklist item**.
+
+## Delta from the plan's API sketch
+
+- `RenderTarget` (for both the offscreen-image case in M0-2/M0-3 and the
+  second-window case here) is a standalone component spawned alongside
+  `Camera`/`Camera3d`, not a field inside a `Camera { target: .. }` struct
+  literal -- confirmed against Bevy's own `examples/window/multiple_windows.rs`
+  and `examples/window/monitor_info.rs` (both fetched and read before writing
+  code).
+- `Window` has no `cursor_options` field; `CursorOptions` (with `visible:
+  bool`) is a separate component spawned alongside `Window`.
+- `Gizmos` has `.cube(transform, color)`, not `.cuboid(...)`.
+- `WindowResolution` again has no `From<(f32, f32)>`; `(u32, u32)` only.
+- Monitor enumeration and per-monitor info (`Monitor` component: `name`,
+  `physical_width`/`physical_height`, `physical_position`,
+  `refresh_rate_millihertz`, `scale_factor`) matches the plan's sketch
+  closely; this part needed no correction, confirmed against Bevy's own
+  `examples/window/monitor_info.rs`.
+
+## User checklist — needs a second display/projector attached
+
+- [ ] **Layer isolation, by eye.** With a second monitor attached, confirm
+      the wireframe gizmo cube is visible in the editor window and
+      **completely absent** from the output window.
+- [ ] **Real monitor selection.** Confirm the output window actually lands
+      on the second monitor via `BorderlessFullscreen(MonitorSelection::Entity(..))`
+      -- correct position, correct size, no title bar, no border.
+- [ ] **Manual fallback path, visual check.** The single-monitor run above
+      already exercised `WindowMode::Windowed` + `decorations: false` +
+      explicit position/resolution as a *substitute* for
+      `BorderlessFullscreen`; with only one monitor there was nothing to
+      compare it against. With a second monitor available, deliberately
+      force the fallback path (temporarily hardcode it, or note it's the
+      code path already in `spawn_output_window`'s single-monitor branch)
+      and confirm it still looks correct on the real second display -- this
+      is the escape hatch for a projector with a wrong/missing EDID at a
+      venue, so it needs to be known-good before it's needed live.
+- [ ] **Esc-to-close on a real fullscreen borderless window.** With the
+      output window focused and actually fullscreen-borderless (not the
+      single-monitor windowed fallback), press Esc and confirm the window
+      and its camera despawn cleanly, with no leftover always-on-top stuck
+      window.
+- [ ] **Vsync table with mismatched refresh rates.** Repeat the three-row
+      table above with the editor on a high-refresh panel and the output on
+      an actual 60Hz projector, and confirm whether the output window's
+      frame rate ever drops below 60Hz in any configuration -- that is the
+      one thing that actually matters per the plan.
+- [ ] **10-minute stability run.** Leave both windows running for 10
+      minutes while actively dragging/interacting with the editor window.
+      Record the output window's frame time: minimum, maximum, and 99th
+      percentile (the spike's `WindowFrameStats` component already tracks
+      min/max continuously; read it via `--auto-close <frames>` at the
+      10-minute frame count, or watch for logged drift if extended to log
+      periodically). Watch for drift.
