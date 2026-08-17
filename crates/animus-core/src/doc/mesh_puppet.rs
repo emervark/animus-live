@@ -14,6 +14,15 @@ fn one() -> f32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MeshPuppet {
     pub texture: AssetId,
+    /// Where the silhouette's alpha comes from.
+    ///
+    /// One mode exists today (`UseImageAlpha`). The field is serialized
+    /// anyway, from the first save, so adding a mode later is a new *value*
+    /// in an existing field rather than a schema change needing a
+    /// migration. `#[serde(default)]` also means projects written before
+    /// this field existed still load.
+    #[serde(default)]
+    pub matte: MatteParams,
     pub mesh: MeshData,
     pub skeleton: SkeletonData,
     pub attachments: AttachmentTable,
@@ -31,6 +40,7 @@ impl MeshPuppet {
     pub fn empty(texture: AssetId) -> Self {
         Self {
             texture,
+            matte: MatteParams::default(),
             mesh: MeshData::default(),
             skeleton: SkeletonData::default(),
             attachments: AttachmentTable::default(),
@@ -38,6 +48,23 @@ impl MeshPuppet {
             solver_override: None,
         }
     }
+}
+
+/// How a puppet's alpha is obtained.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatteParams {
+    #[serde(default)]
+    pub mode: MatteMode,
+}
+
+/// The alpha source. Additive by design: new variants are new values in an
+/// existing field, so old projects keep loading and no migration is needed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatteMode {
+    /// Use the image's own alpha channel. The only mode M1 implements.
+    #[default]
+    UseImageAlpha,
 }
 
 // ── Mesh: structure of arrays ───────────────────────────────────────────

@@ -186,6 +186,7 @@ field table for other enums below.)
 | Field | Type | Meaning |
 |---|---|---|
 | `texture` | integer | Asset ID of the puppet's texture image. |
+| `matte` | object | `{ "mode": "use_image_alpha" }` — where the silhouette's alpha comes from. Optional; omitted means `use_image_alpha`, so files written before this field existed load unchanged. **`mode` is an open set by design:** a reader that meets an unknown mode must report it as an unsupported project rather than guessing, and a writer may only emit modes it implements. New alpha sources are therefore new *values* here, never a schema change, and adding one needs no migration. |
 | `mesh` | object | See below. |
 | `skeleton` | object | See below. |
 | `attachments` | object | `{ "entries": [ ... ] }`, see below. |

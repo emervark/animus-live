@@ -6,6 +6,7 @@
 
 pub mod doc;
 pub mod ids;
+pub mod image_in;
 pub mod mesh;
 pub mod migrate;
 pub mod remap;

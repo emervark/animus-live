@@ -84,6 +84,9 @@
       "kind": {
         "type": "mesh",
         "texture": 1,
+        "matte": {
+          "mode": "use_image_alpha"
+        },
         "mesh": {
           "positions": [
             [

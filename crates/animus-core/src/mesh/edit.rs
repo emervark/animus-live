@@ -67,6 +67,7 @@ impl MeshPuppet {
     pub fn remove_vertices(&mut self, victims: &[u32]) -> IndexRemap {
         let MeshPuppet {
             texture: _,
+            matte: _, // an alpha source, no vertex indices
             mesh,
             skeleton: _, // stores JointIds and BoneIds, never vertex indices
             attachments,

@@ -22,7 +22,7 @@ pub use command::{
 pub use layer::{BlendMode, Layer, Transform2Or3};
 pub use mesh_puppet::{
     AlphaModeCfg, Attachment, AttachmentTable, AutoMeshMode, AutoMeshParams, Bone, Joint,
-    MaterialCfg, MeshData, MeshPuppet, MeshSource, SkeletonData,
+    MaterialCfg, MatteMode, MatteParams, MeshData, MeshPuppet, MeshSource, SkeletonData,
 };
 pub use model_puppet::{DrivenJoint, ModelPuppet};
 pub use puppet::{Puppet, PuppetKind};
