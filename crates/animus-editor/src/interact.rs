@@ -39,6 +39,12 @@ pub struct FrameViewportInput(pub Option<ViewportInput>);
 #[derive(Resource, Debug, Default)]
 pub struct FrameDockOutput(pub Option<DockOutput>);
 
+/// Whether egui has keyboard focus (a text field is being typed into),
+/// published from the egui pass. Tool shortcuts must not fire while the
+/// operator is renaming a layer that happens to contain a J.
+#[derive(Resource, Debug, Default)]
+pub struct EguiWantsKeyboard(pub bool);
+
 /// Bone-tool state: the first joint of a pending bone, if one was clicked.
 #[derive(Resource, Debug, Default)]
 pub struct PendingBone(pub Option<(PuppetId, animus_core::ids::JointId)>);
@@ -333,4 +339,52 @@ fn apply_layer_move(
         }
     }
     state.undo.break_merge();
+}
+
+/// Keyboard shortcuts: tools, mode, undo and redo.
+///
+/// The tooltips advertise these, and a shortcut that is advertised but
+/// absent is worse than none. Gated on egui not holding keyboard focus.
+pub fn keyboard_shortcuts(
+    keys: Res<ButtonInput<KeyCode>>,
+    egui_focus: Res<EguiWantsKeyboard>,
+    mut state: ResMut<EditorState>,
+    mut doc: ResMut<DocumentRes>,
+    mut pending: ResMut<PendingChangesRes>,
+) {
+    if egui_focus.0 {
+        return;
+    }
+
+    if keys.just_pressed(KeyCode::KeyV) {
+        state.tool = Tool::Select;
+    }
+    if keys.just_pressed(KeyCode::KeyJ) {
+        state.tool = Tool::Joint;
+    }
+    if keys.just_pressed(KeyCode::KeyB) {
+        state.tool = Tool::Bone;
+    }
+    if keys.just_pressed(KeyCode::Tab) {
+        state.mode = match state.mode {
+            crate::state::EditMode::Edit => crate::state::EditMode::Live,
+            crate::state::EditMode::Live => crate::state::EditMode::Edit,
+        };
+    }
+
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if ctrl && keys.just_pressed(KeyCode::KeyZ) {
+        let result = if shift {
+            state.undo.redo(&mut doc.0)
+        } else {
+            state.undo.undo(&mut doc.0)
+        };
+        if let Some(result) = result {
+            match result {
+                Ok(changes) => pending.extend(changes.0),
+                Err(e) => error!("undo/redo failed: {e}"),
+            }
+        }
+    }
 }

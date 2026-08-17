@@ -39,6 +39,7 @@ impl Plugin for RuntimePlugin {
             .init_resource::<DocRevision>()
             .init_resource::<PendingChangesRes>()
             .init_resource::<EntityIndex>()
+            .init_resource::<crate::project::PuppetTextures>()
             .init_resource::<BuildWarnings>()
             .add_systems(Update, sync_document.in_set(SyncSet::Apply));
     }

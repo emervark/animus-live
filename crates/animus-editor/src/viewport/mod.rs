@@ -8,6 +8,7 @@
 pub mod camera;
 pub mod input;
 
+use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{RenderTarget, ScalingMode};
 use bevy::image::Image;
 use bevy::prelude::*;
@@ -75,6 +76,7 @@ pub fn setup(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
     mut user_textures: ResMut<EguiUserTextures>,
+    scale: Option<Res<animus_runtime::RenderScale>>,
 ) {
     let handle = images.add(new_target_image(INITIAL_SIZE));
     user_textures.add_image(EguiTextureHandle::Strong(handle.clone()));
@@ -88,11 +90,23 @@ pub fn setup(
         },
         RenderTarget::Image(handle.clone().into()),
         Projection::Orthographic(OrthographicProjection {
-            scale: 1.0,
+            // Start at one image pixel per screen pixel. Under WindowSize,
+            // scale is world-units-per-screen-pixel, and the world is image
+            // pixels divided by ppu — so 1/ppu makes an imported drawing
+            // appear at its native size. At the default scale of 1.0 a
+            // 1400px puppet would render 14px wide, and the first thing an
+            // operator saw after importing would be apparently nothing.
+            scale: 1.0 / scale.map(|s| s.ppu).unwrap_or(100.0),
             scaling_mode: ScalingMode::WindowSize,
             ..OrthographicProjection::default_3d()
         }),
         Transform::from_xyz(0.0, 0.0, 100.0).looking_at(Vec3::ZERO, Vec3::Y),
+        // Layers 0 AND 1: the show plus the editor's gizmos. The output
+        // camera carries layer 0 only — this asymmetry IS the isolation.
+        // Without this line the viewport camera defaults to layer 0 and
+        // every joint, bone and wireframe is silently invisible in the
+        // editor, which the first dry run of the 10-minute test caught.
+        RenderLayers::from_layers(&[0, crate::gizmos::EDITOR_LAYER]),
         ViewportCamera,
     ));
 

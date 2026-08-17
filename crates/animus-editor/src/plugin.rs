@@ -5,7 +5,9 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
 use crate::gizmos;
 use crate::import::{self, ImportStatus, ProjectRoot};
-use crate::interact::{self, ActiveDrag, FrameDockOutput, FrameViewportInput, PendingBone};
+use crate::interact::{
+    self, ActiveDrag, EguiWantsKeyboard, FrameDockOutput, FrameViewportInput, PendingBone,
+};
 use crate::state::{EditorState, save_layout};
 use crate::viewport::{self, ViewportCamera, ViewportTarget};
 use crate::{dock, theme};
@@ -31,11 +33,13 @@ impl Plugin for EditorPlugin {
             .init_resource::<ActiveDrag>()
             .init_resource::<FrameViewportInput>()
             .init_resource::<FrameDockOutput>()
+            .init_resource::<EguiWantsKeyboard>()
             .init_resource::<PendingBone>()
             .init_resource::<ProjectRoot>()
             .add_systems(Update, import::handle_dropped_files)
             .add_systems(Update, interact::apply_interactions)
             .add_systems(Update, interact::apply_dock_output)
+            .add_systems(Update, interact::keyboard_shortcuts)
             .add_systems(PostUpdate, gizmos::draw_rigs)
             // Ordered, not incidental: the window camera must exist before
             // the viewport's offscreen one. See `setup`.
@@ -75,6 +79,7 @@ fn ui_system(
     status: Res<ImportStatus>,
     mut frame_input: ResMut<FrameViewportInput>,
     mut dock_out: ResMut<FrameDockOutput>,
+    mut egui_focus: ResMut<EguiWantsKeyboard>,
     output_state: Option<Res<animus_output::OutputState>>,
     output_config: Option<Res<animus_output::OutputConfig>>,
     mut installed: Local<bool>,
@@ -91,6 +96,7 @@ fn ui_system(
         .as_ref()
         .zip(output_config.as_ref())
         .map(|(st, cfg)| (cfg.vsync, st.description.clone()));
+    egui_focus.0 = ctx.egui_wants_keyboard_input();
     let mut out = dock::draw(
         ctx,
         &mut state,

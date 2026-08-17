@@ -137,12 +137,15 @@ fn display_name(file_name: &str) -> String {
 }
 
 /// Handle files dropped onto the window.
+#[allow(clippy::too_many_arguments)]
 pub fn handle_dropped_files(
     mut events: MessageReader<FileDragAndDrop>,
     mut doc: ResMut<animus_runtime::DocumentRes>,
     mut pending: ResMut<animus_runtime::PendingChangesRes>,
     mut state: ResMut<EditorState>,
     mut status: ResMut<ImportStatus>,
+    mut textures: ResMut<animus_runtime::PuppetTextures>,
+    mut images: ResMut<Assets<Image>>,
     root: Res<ProjectRoot>,
 ) {
     for event in events.read() {
@@ -153,6 +156,28 @@ pub fn handle_dropped_files(
         let mut store = AssetStore::new(&root.0);
         match build_import(path_buf, &mut doc.0, &mut store) {
             Ok((command, imported)) => {
+                // The GPU texture, from the same bytes the mesh came from.
+                // Without this the puppet spawns with an untextured white
+                // material — found in the Task 15 dry run.
+                if let Ok(bytes) = std::fs::read(path_buf)
+                    && let Ok(img) =
+                        animus_core::image_in::decode(&bytes, &command.asset.original_name)
+                {
+                    let (w, h) = (img.width(), img.height());
+                    let image = Image::new(
+                        bevy::render::render_resource::Extent3d {
+                            width: w,
+                            height: h,
+                            ..default()
+                        },
+                        bevy::render::render_resource::TextureDimension::D2,
+                        img.into_raw(),
+                        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+                        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+                    );
+                    textures.0.insert(command.asset.id, images.add(image));
+                }
+
                 let label = format!(
                     "{} imported: {} vertices, {} triangles",
                     command.puppet.name,

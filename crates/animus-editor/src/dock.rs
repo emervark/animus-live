@@ -127,6 +127,27 @@ impl TabViewer<'_> {
         let available = ui.available_size();
         let size = egui::vec2(available.x.max(16.0), available.y.max(16.0));
         let input = viewport_widget(ui, self.viewport_texture, size);
+
+        // The empty state carries the first instruction, in the place the
+        // operator is already looking. The 10-minute test allows no manual;
+        // this line is the manual.
+        if self.doc.puppets.is_empty() {
+            ui.painter().text(
+                input.rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "Drag a PNG with a transparent background here",
+                egui::FontId::proportional(15.0),
+                theme::DIM,
+            );
+            ui.painter().text(
+                input.rect.center() + egui::vec2(0.0, 24.0),
+                egui::Align2::CENTER_CENTER,
+                "then press J to place joints, B to connect bones",
+                egui::FontId::proportional(12.0),
+                theme::FAINT,
+            );
+        }
+
         self.status_strip(ui, input.rect);
         self.viewport_input = Some(input);
     }
@@ -270,6 +291,12 @@ impl TabViewer<'_> {
                 .corner_radius(theme::R_INPUT)
                 .min_size(egui::vec2(ui.available_width(), 0.0)),
             );
+            let response = response.on_hover_text(match tool {
+                Tool::Select => "Click a joint to select it; drag to move it. In Live mode, dragging pulls the puppet.",
+                Tool::Joint => "Click on the puppet to place a joint. The first one is pinned and anchors the rig.",
+                Tool::Bone => "Click one joint, then another, to connect them with a spring.",
+                Tool::Vertex => "Mesh editing arrives in a later milestone.",
+            });
             if response.clicked() {
                 self.state.tool = tool;
             }
@@ -301,6 +328,10 @@ impl TabViewer<'_> {
                             })
                             .corner_radius(theme::R_BUTTON),
                     )
+                    .on_hover_text(match mode {
+                        EditMode::Edit => "Dragging a joint moves its rest position. Undoable.",
+                        EditMode::Live => "Dragging pulls the puppet and the springs answer. The document is untouched.",
+                    })
                     .clicked()
                 {
                     self.state.mode = mode;
