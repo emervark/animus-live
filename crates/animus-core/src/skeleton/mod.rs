@@ -10,14 +10,16 @@
 //! frame — origin at joint A, X axis along A→B — that rotates when a limb
 //! swings. [`Attachment::local`](crate::doc::Attachment::local) is
 //! recorded in that frame. `BakedInfluences::joint_index` therefore holds
-//! bone indices, and `MAX_SKIN_BONES` bounds bones per puppet, not
+//! bone indices, and `UNIFORM_PATH_BONE_LIMIT` bounds bones per puppet, not
 //! joints.
 
 mod attach;
 mod bake;
 
 pub use attach::auto_attach;
-pub use bake::{BakeError, BakedInfluences, MAX_INFLUENCES, MAX_SKIN_BONES, bake_influences};
+pub use bake::{
+    BakeError, BakedInfluences, MAX_INFLUENCES, UNIFORM_PATH_BONE_LIMIT, bake_influences,
+};
 
 #[cfg(test)]
 mod tests {
@@ -253,18 +255,25 @@ mod tests {
     }
 
     #[test]
-    fn more_than_256_bones_is_a_clear_error_not_a_render_panic() {
+    fn more_than_256_bones_bakes_and_is_reported_not_refused() {
         // Bevy's MAX_JOINTS counts entries in SkinnedMesh.joints, and per
-        // spec section 7.3 those are our BONES, not our joints.
+        // spec section 7.3 those are our BONES, not our joints. But it
+        // bounds only the fallback uniform-buffer path: the M0-1 spike ran
+        // 257 and 512 bones clean on two discrete GPUs. Refusing here would
+        // block rigs that work.
         let (rig, _bone_ids) = rig_with_bones(300);
-        let err = bake_influences(&AttachmentTable::default(), &rig, 1).unwrap_err();
-        assert!(matches!(
-            err,
-            BakeError::TooManyBones {
-                count: 300,
-                max: 256
-            }
-        ));
+        let baked = bake_influences(&AttachmentTable::default(), &rig, 1)
+            .expect("300 bones is not an error");
+        assert_eq!(baked.bone_count, 300);
+        assert!(baked.exceeds_uniform_bone_limit());
+    }
+
+    #[test]
+    fn a_small_rig_does_not_trip_the_uniform_limit_warning() {
+        let (rig, _bone_ids) = rig_with_bones(12);
+        let baked = bake_influences(&AttachmentTable::default(), &rig, 1).unwrap();
+        assert_eq!(baked.bone_count, 12);
+        assert!(!baked.exceeds_uniform_bone_limit());
     }
 
     #[test]

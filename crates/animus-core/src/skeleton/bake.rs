@@ -6,10 +6,22 @@ use crate::ids::BoneId;
 use crate::solver::CompiledRig;
 use std::cmp::Ordering;
 
-/// Bevy's `MAX_JOINTS`: the maximum number of skinning-palette entries per
-/// mesh. In Animus Live those entries are **bones**, not `Joint`s (see the
-/// `skeleton` module doc) — so this bounds bones per puppet.
-pub const MAX_SKIN_BONES: usize = 256;
+/// Bevy's `MAX_JOINTS`. In Animus Live those palette entries are **bones**,
+/// not `Joint`s (see the `skeleton` module doc), so this counts bones.
+///
+/// **It is not a hardware-independent ceiling, and this crate does not
+/// enforce it as one.** Reading `bevy_pbr/src/render/skin.rs`, `MAX_JOINTS`
+/// bounds the *fallback uniform-buffer path*, taken only when
+/// `storage_buffers_are_unsupported(limits)`. On any GPU with storage
+/// buffers Bevy uses a growable allocator with no such cap: the M0-1 spike
+/// ran 257 and 512 bones clean on two different discrete GPUs
+/// (`docs/spikes/m0-1-skinned-mesh.md`).
+///
+/// So a bake over this count is **reported, not refused**. Refusing would be
+/// wrong on capable hardware; refusing silently at 256 on uniform-buffer-only
+/// hardware would also be wrong, because that path's real failure mode is
+/// still untested. The caller warns and lets the render path speak.
+pub const UNIFORM_PATH_BONE_LIMIT: usize = 256;
 
 /// GPU vertex attributes carry exactly four influences per vertex.
 pub const MAX_INFLUENCES: usize = 4;
@@ -35,6 +47,11 @@ pub struct BakedInfluences {
     /// Per vertex, the weight for each corresponding `joint_index` entry.
     /// Sums to 1.0 for any vertex with at least one influence.
     pub joint_weight: Vec<[f32; 4]>,
+    /// How many bones this palette addresses. Compare against
+    /// [`UNIFORM_PATH_BONE_LIMIT`] via
+    /// [`exceeds_uniform_bone_limit`](BakedInfluences::exceeds_uniform_bone_limit)
+    /// to decide whether to warn.
+    pub bone_count: usize,
     /// The largest fraction of any single vertex's authored weight that
     /// was dropped by keeping only its top four influences, across all
     /// vertices. 0.0 if no vertex had more than four attachments. Surface
@@ -43,12 +60,16 @@ pub struct BakedInfluences {
     pub max_dropped_mass: f32,
 }
 
+impl BakedInfluences {
+    /// True when this rig would exceed Bevy's uniform-buffer skinning path.
+    /// Not a failure — a reason to warn. See [`UNIFORM_PATH_BONE_LIMIT`].
+    pub fn exceeds_uniform_bone_limit(&self) -> bool {
+        self.bone_count > UNIFORM_PATH_BONE_LIMIT
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum BakeError {
-    /// The rig has more bones than Bevy's `MAX_JOINTS` skinning-palette
-    /// limit. Reported here, before the renderer would panic on it.
-    #[error("rig has {count} bones, exceeding the {max}-bone skinning limit")]
-    TooManyBones { count: usize, max: usize },
     /// `att` names a bone `rig` does not contain. This is not malformed
     /// user input to shrug off — `BoneId`s are allocated from the
     /// project-wide `IdAlloc` sequence, so a dangling one means the
@@ -75,21 +96,15 @@ pub enum BakeError {
 /// since `BoneId`s come from the project-wide `IdAlloc` sequence and are
 /// not 0-based or contiguous per puppet.
 ///
-/// Returns `Err(BakeError::TooManyBones)` if `rig` has more than
-/// `MAX_SKIN_BONES` bones, or `Err(BakeError::UnknownBone)` if `att`
-/// names a bone `rig` does not contain.
+/// Returns `Err(BakeError::UnknownBone)` if `att` names a bone `rig` does
+/// not contain. A bone count above [`UNIFORM_PATH_BONE_LIMIT`] is *not* an
+/// error — see that constant.
 pub fn bake_influences(
     att: &AttachmentTable,
     rig: &CompiledRig,
     vertex_count: usize,
 ) -> Result<BakedInfluences, BakeError> {
     let bone_count = rig.bone_a.len();
-    if bone_count > MAX_SKIN_BONES {
-        return Err(BakeError::TooManyBones {
-            count: bone_count,
-            max: MAX_SKIN_BONES,
-        });
-    }
 
     let mut per_vertex: Vec<Vec<(u32, f32)>> = vec![Vec::new(); vertex_count];
     for entry in &att.entries {
@@ -144,6 +159,7 @@ pub fn bake_influences(
     Ok(BakedInfluences {
         joint_index,
         joint_weight,
+        bone_count,
         max_dropped_mass,
     })
 }

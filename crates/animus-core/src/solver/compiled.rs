@@ -107,6 +107,30 @@ impl CompiledRig {
         self.joint_index.get(&id).copied()
     }
 
+    /// How many bones the dense arrays hold. This is the length the GPU
+    /// skinning palette must have, and the order every consumer must agree
+    /// on: `BakedInfluences::joint_index` stores indices into it, and the
+    /// render side's inverse bind poses and bone entities are built in the
+    /// same order. Two different orders here is the failure that makes
+    /// vertices follow the wrong limb without crashing.
+    pub fn bone_count(&self) -> usize {
+        self.bone_a.len()
+    }
+
+    /// The two joint indices bone `bone` spans, in dense joint order.
+    ///
+    /// Public because the render side needs it twice: once to build bind
+    /// poses at rest, and once per frame to derive each bone entity's
+    /// transform from the solver's joint positions.
+    pub fn bone_joints(&self, bone: usize) -> Option<(u32, u32)> {
+        Some((*self.bone_a.get(bone)?, *self.bone_b.get(bone)?))
+    }
+
+    /// A joint's rest position, image space, in dense joint order.
+    pub fn joint_rest(&self, joint: usize) -> Option<Vec2> {
+        self.rest.get(joint).copied()
+    }
+
     /// Dense index of bone `id` into `bone_a`/`bone_b`/etc — the index
     /// `BakedInfluences::joint_index` (in `crate::skeleton`) must store,
     /// NOT the raw `BoneId` value. `BoneId`s are allocated from a
