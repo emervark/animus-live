@@ -55,6 +55,7 @@ animus-project = { path = "crates/animus-project" }
 animus-runtime = { path = "crates/animus-runtime" }
 animus-editor  = { path = "crates/animus-editor" }
 animus-output  = { path = "crates/animus-output" }
+animus-app     = { path = "crates/animus-app" }
 
 [profile.dev]
 opt-level = 1

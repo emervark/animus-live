@@ -292,6 +292,8 @@ M0-4 is the reference implementation, including its bug.
 
 ## Task 13: `animus-app` — the binary
 
+> **DONE 2026-08-17** — `crates/animus-app`, and the application has been started for real: two windows open, the single-display fallback fires with its message, one benign one-frame warning, zero errors. CLI parsed by hand with tests (an unknown flag is an error, not a silently ignored typo). Autosave writes a sidecar, never the operator's save, and only when the revision moved. Panic hook writes a crash file next to the exe — at a venue the console is gone but the file survives. `--perform` is honoured as output-first startup; full PerformanceMode is M2's, and the distinction is documented rather than half-built.
+
 - [ ] **Step 1:** `animus [project.animus]`, `--perform`, `--output-monitor <index>`, `--no-vsync`.
 - [ ] **Step 2: Autosave** to a sidecar on a timer and before every risky operation, with recovery on next launch. Required in M1 per §18.
 - [ ] **Step 3: Panic handling** — a panic in a subsystem must not take down a show. Catch, log, surface, and keep the output window alive.

@@ -1,0 +1,25 @@
+[package]
+name = "animus-app"
+description = "The animus binary: CLI, plugin wiring, autosave, panic handling."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "animus"
+path = "src/main.rs"
+
+[dependencies]
+animus-core.workspace = true
+animus-project.workspace = true
+animus-runtime.workspace = true
+animus-editor.workspace = true
+animus-output.workspace = true
+bevy.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

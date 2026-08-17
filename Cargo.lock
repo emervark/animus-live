@@ -188,6 +188,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "animus-app"
+version = "0.1.0"
+dependencies = [
+ "animus-core",
+ "animus-editor",
+ "animus-output",
+ "animus-project",
+ "animus-runtime",
+ "bevy",
+ "glam 0.32.1",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "animus-core"
 version = "0.1.0"
 dependencies = [
