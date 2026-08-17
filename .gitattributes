@@ -1,0 +1,16 @@
+# Normalize everything to LF in the repository and check it out as LF on
+# every platform, Windows included.
+#
+# This is not a style preference. `spec/fixtures/` holds byte-exact golden
+# files that the project codec is compared against, and Git's default
+# `core.autocrlf=true` on Windows rewrites them to CRLF on checkout — so
+# `spec_worked_example_matches_the_committed_fixture` fails on a fresh clone
+# for a reason that has nothing to do with the format. Rust, Cargo and every
+# editor this project uses read LF on Windows without complaint.
+* text=auto eol=lf
+
+# Binary assets: never touched.
+*.png binary
+*.jpg binary
+*.bin binary
+*.gltf -text
