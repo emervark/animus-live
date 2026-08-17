@@ -53,6 +53,17 @@ impl SolverState {
         self.target[joint as usize] = None;
     }
 
+    /// Drop every target.
+    ///
+    /// The driver calls this at the top of each tick and re-applies whatever
+    /// is still being driven. Without it, releasing a joint would leave its
+    /// last target in place and the limb would hang there for the rest of
+    /// the show — the spring-back everyone expects is the *absence* of a
+    /// target, not an extra command.
+    pub fn clear_all_targets(&mut self) {
+        self.target.iter_mut().for_each(|t| *t = None);
+    }
+
     /// Current positions, in dense joint-index order.
     pub fn positions(&self) -> &[Vec2] {
         &self.pos

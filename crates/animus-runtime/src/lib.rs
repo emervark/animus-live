@@ -11,6 +11,7 @@ pub mod index;
 pub mod plugin;
 pub mod project;
 pub mod skinning;
+pub mod solve;
 
 pub use components::{
     BoneOf, CompiledRigRef, EditorOnly, LayerOf, PuppetMesh, PuppetRoot, PuppetSolver,
@@ -23,3 +24,4 @@ pub use project::{
     puppet_pivot, sync_document,
 };
 pub use skinning::{BuildError, SkinnedMeshBuild, build_inverse_bindposes, build_skinned_mesh};
+pub use solve::{JointTargets, SolveSet, SolverPanic, SolverPlugin, WritebackSet};

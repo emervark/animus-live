@@ -377,6 +377,7 @@ fn spawn_puppet(
             PuppetRoot(id),
             CompiledRigRef(rig.clone()),
             PuppetSolver(solver),
+            crate::solve::LastStepOutcome(animus_core::solver::StepOutcome::Ok),
             root_transform(doc, id),
             Visibility::default(),
         ))
