@@ -1,0 +1,25 @@
+[package]
+name = "animus-editor"
+description = "The Animus Live editor: dock, viewport, tools, gizmos, undo."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+animus-core.workspace = true
+animus-project.workspace = true
+animus-runtime.workspace = true
+bevy.workspace = true
+bevy_egui.workspace = true
+egui.workspace = true
+egui_dock.workspace = true
+glam.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+tempfile.workspace = true

@@ -75,6 +75,8 @@ Three doors, held open by construction:
 
 ## Task 1: Core — the `DocCommand` spine and undo stack
 
+> **DONE 2026-08-17** — `crates/animus-core/src/doc/{command,undo}.rs`, 20 tests including two properties. Merging is bounded by `break_merge()` from the caller rather than a time window: core has no clock, and a gesture ends when the mouse comes up, not when a timer expires.
+
 Nothing in M1 can edit anything until this exists, and §18 flags it as required in M1 precisely because retrofitting undo is expensive.
 
 **Files:** create `crates/animus-core/src/doc/command.rs`, `undo.rs`; modify `doc/mod.rs`, `lib.rs`
@@ -101,6 +103,8 @@ Nothing in M1 can edit anything until this exists, and §18 flags it as required
 ---
 
 ## Task 2: Core — the import contract, and the hinges for later formats
+
+> **DONE 2026-08-17** — `crates/animus-core/src/image_in/`. Regenerating both golden fixtures removed the only corpus lacking the new field, so `additive_fields.rs` was added to keep the no-migration guarantee tested.
 
 Small task, and the whole point of it is what it makes possible later.
 
@@ -129,6 +133,8 @@ Small task, and the whole point of it is what it makes possible later.
 
 ## Task 3: `animus-runtime` — the skinning build
 
+> **DONE 2026-08-17** — `crates/animus-runtime/src/{coords,skinning}.rs`, 15 headless tests. Verified by mutation: flipping the sign in the bind-pose rotation fails the frame-convention test.
+
 The single point where the document meets Bevy's GPU skinning. Spec §7.
 
 **Files:** create `crates/animus-runtime/` (`Cargo.toml`, `src/lib.rs`, `src/skinning.rs`, `src/coords.rs`)
@@ -153,6 +159,8 @@ The single point where the document meets Bevy's GPU skinning. Spec §7.
 
 ## Task 4: `animus-runtime` — document → ECS projection
 
+> **DONE 2026-08-17** — `crates/animus-runtime/src/{components,index,project,plugin}.rs`, 11 tests through a real `App`. The first version lost change *ordering*, so a puppet survived its own deletion; changes are a sequence, not a set.
+
 **Files:** `src/project.rs`, `src/index.rs`, `src/plugin.rs`
 
 **Interfaces:** `DocumentRes`, `DocRevision`, `PendingChangesRes`, `EntityIndex { puppets, joints, layers }`, `PuppetRoot`, `JointOf`, `CompiledRigRef(Arc<CompiledRig>)`, `PuppetSolver(SolverState)`, `RuntimePlugin`
@@ -168,6 +176,8 @@ The single point where the document meets Bevy's GPU skinning. Spec §7.
 
 ## Task 5: `animus-runtime` — the solver driver
 
+> **DONE 2026-08-17** — `crates/animus-runtime/src/solve.rs`, 6 tests. Two of them encoded wrong beliefs rather than wrong code: a released joint does not return to its rest pose (distance constraints, no angular springs), and the guard must be asserted through its message because a 60Hz frame runs two 120Hz ticks.
+
 **Files:** `src/solve.rs`
 
 - [ ] **Step 1: Failing tests** — a pinned joint stays pinned across 1000 ticks; a released puppet returns to rest; a NaN injected into `SolverState` triggers `reset_to_rest` and one `SolverPanic` event and does not propagate to other puppets; interpolation output is continuous across a tick boundary.
@@ -179,6 +189,8 @@ The single point where the document meets Bevy's GPU skinning. Spec §7.
 ---
 
 ## Task 6: `animus-editor` — shell, dock and theme
+
+> **IN PROGRESS 2026-08-17** — theme, state and dock written; the visual system is Showmesh's, lifted from its `DESIGN.md`. Contrast, the readable floor and the Signal Rule are asserted arithmetically in `theme.rs`'s tests. Fonts are deliberately not shipped yet and the reason is recorded in `install_fonts`.
 
 §10.6 budgets two days for the theme and says not to defer it. Keep that.
 
