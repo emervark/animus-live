@@ -28,6 +28,13 @@ i_overlay   = "8.1"
 imageproc   = { version = "0.27", default-features = false }
 image       = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
+# --- bevy half ---
+# Exact-pinned: every Bevy bump requires re-checking the glam pin above and
+# the wgpu-hal/egui set. Default features for now -- the application needs
+# most of them anyway, and guessing at a trimmed feature list is a worse
+# first move than measuring later.
+bevy        = "=0.19.1"
+
 # --- project io ---
 sha2        = "0.10"
 tempfile    = "3"
@@ -40,6 +47,7 @@ approx      = "0.5"
 # --- internal ---
 animus-core    = { path = "crates/animus-core" }
 animus-project = { path = "crates/animus-project" }
+animus-runtime = { path = "crates/animus-runtime" }
 
 [profile.dev]
 opt-level = 1

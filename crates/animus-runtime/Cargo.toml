@@ -1,0 +1,18 @@
+[package]
+name = "animus-runtime"
+description = "Projects the Animus Live document into Bevy: skinned meshes, entities, solver driver."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+animus-core.workspace = true
+bevy.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+indexmap.workspace = true
