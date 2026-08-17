@@ -5,7 +5,7 @@ use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
 use crate::gizmos;
 use crate::import::{self, ImportStatus, ProjectRoot};
-use crate::interact::{self, ActiveDrag, FrameViewportInput, PendingBone};
+use crate::interact::{self, ActiveDrag, FrameDockOutput, FrameViewportInput, PendingBone};
 use crate::state::{EditorState, save_layout};
 use crate::viewport::{self, ViewportCamera, ViewportTarget};
 use crate::{dock, theme};
@@ -30,10 +30,12 @@ impl Plugin for EditorPlugin {
             .init_resource::<ImportStatus>()
             .init_resource::<ActiveDrag>()
             .init_resource::<FrameViewportInput>()
+            .init_resource::<FrameDockOutput>()
             .init_resource::<PendingBone>()
             .init_resource::<ProjectRoot>()
             .add_systems(Update, import::handle_dropped_files)
             .add_systems(Update, interact::apply_interactions)
+            .add_systems(Update, interact::apply_dock_output)
             .add_systems(PostUpdate, gizmos::draw_rigs)
             // Ordered, not incidental: the window camera must exist before
             // the viewport's offscreen one. See `setup`.
@@ -72,6 +74,7 @@ fn ui_system(
     >,
     status: Res<ImportStatus>,
     mut frame_input: ResMut<FrameViewportInput>,
+    mut dock_out: ResMut<FrameDockOutput>,
     mut installed: Local<bool>,
 ) -> Result {
     let texture = contexts.image_id(&target.image);
@@ -82,8 +85,10 @@ fn ui_system(
         *installed = true;
     }
 
-    let input = dock::draw(ctx, &mut state, &doc, texture, Some(&target), &status);
-    frame_input.0 = input;
+    let mut out = dock::draw(ctx, &mut state, &doc, texture, Some(&target), &status);
+    frame_input.0 = out.viewport_input.take();
+    dock_out.0 = Some(out);
+    let input = frame_input.0;
 
     if let Some(input) = input {
         // Resize first: the camera reads the target's size when it

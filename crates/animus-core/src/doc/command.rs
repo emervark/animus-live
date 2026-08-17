@@ -234,7 +234,7 @@ pub enum BoneParam {
     AttachRadius,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SetBoneParam {
     pub puppet: PuppetId,
     pub bone: BoneId,
@@ -284,7 +284,7 @@ impl DocCommand for SetBoneParam {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SetJointPinned {
     pub puppet: PuppetId,
     pub joint: JointId,
@@ -323,7 +323,7 @@ pub enum LayerScalar {
     Depth,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SetLayerScalar {
     pub layer: LayerId,
     pub which: LayerScalar,
@@ -375,7 +375,7 @@ impl DocCommand for SetLayerScalar {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RenameLayer {
     pub layer: LayerId,
     pub from: String,

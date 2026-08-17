@@ -12,7 +12,9 @@ use animus_runtime::{DocumentRes, JointTargets, PendingChangesRes, RenderScale, 
 use bevy::prelude::*;
 use glam::Vec2;
 
+use crate::dock::DockOutput;
 use crate::drag::{DragEffect, DragEvent, DragState, step};
+use crate::inspect::InspectorCommand;
 use crate::rig;
 use crate::state::{EditorState, Selection, Tool};
 use crate::viewport::{ViewportCamera, ViewportInput, ViewportTarget};
@@ -30,6 +32,12 @@ pub struct ActiveDrag(pub DragState);
 /// resource rather than applied inline.
 #[derive(Resource, Debug, Default)]
 pub struct FrameViewportInput(pub Option<ViewportInput>);
+
+/// The dock's non-viewport output for this frame: inspector edits, layer
+/// moves, undo/redo intents. Same schedule-boundary reason as
+/// [`FrameViewportInput`].
+#[derive(Resource, Debug, Default)]
+pub struct FrameDockOutput(pub Option<DockOutput>);
 
 /// Bone-tool state: the first joint of a pending bone, if one was clicked.
 #[derive(Resource, Debug, Default)]
@@ -204,4 +212,116 @@ fn apply_effect(
         DragEffect::SetTarget { puppet, joint, pos } => targets.set(puppet, joint, pos),
         DragEffect::ClearTarget { puppet, joint } => targets.clear_joint(puppet, joint),
     }
+}
+
+/// Apply the dock's edits: inspector commands, layer moves, undo and redo.
+///
+/// The second writer system, and the last one — everything the UI can do
+/// funnels through here or through `apply_interactions`.
+pub fn apply_dock_output(
+    mut out: ResMut<FrameDockOutput>,
+    mut doc: ResMut<DocumentRes>,
+    mut state: ResMut<EditorState>,
+    mut pending: ResMut<PendingChangesRes>,
+) {
+    let Some(out) = out.0.take() else { return };
+
+    for edit in out.inspector_edits {
+        if let Some(command) = edit.command {
+            let boxed: Box<dyn animus_core::doc::DocCommand> = match command {
+                InspectorCommand::BoneParam(c) => Box::new(c),
+                InspectorCommand::JointPinned(c) => Box::new(c),
+                InspectorCommand::LayerScalar(c) => Box::new(c),
+                InspectorCommand::LayerName(c) => Box::new(c),
+            };
+            match apply_command(&mut doc.0, &mut state.undo, boxed) {
+                Ok(changes) => pending.extend(changes.0),
+                Err(e) => error!("inspector edit failed: {e}"),
+            }
+        }
+        if edit.released {
+            state.undo.break_merge();
+        }
+    }
+
+    if let Some((layer, direction)) = out.layer_move {
+        apply_layer_move(&mut doc, &mut state, &mut pending, layer, direction);
+    }
+
+    // Undo/redo drain the same PendingChanges pipe as everything else, so
+    // the scene rebuilds from whatever the commands report.
+    if out.wants_undo
+        && let Some(result) = state.undo.undo(&mut doc.0)
+    {
+        match result {
+            Ok(changes) => pending.extend(changes.0),
+            Err(e) => error!("undo failed: {e}"),
+        }
+    }
+    if out.wants_redo
+        && let Some(result) = state.undo.redo(&mut doc.0)
+    {
+        match result {
+            Ok(changes) => pending.extend(changes.0),
+            Err(e) => error!("redo failed: {e}"),
+        }
+    }
+}
+
+/// Move a layer one step through the paint order and rewrite depths.
+///
+/// Spec §7.4's rule: `layer.depth` is authoritative world Z, and the list
+/// reorders by rewriting depths with even spacing. Doing both in one undo
+/// entry (ReorderLayers merges nothing, so the depth writes ride the same
+/// gesture via an unsealed stack) keeps "move layer up" a single Ctrl+Z.
+fn apply_layer_move(
+    doc: &mut DocumentRes,
+    state: &mut EditorState,
+    pending: &mut PendingChangesRes,
+    layer: animus_core::ids::LayerId,
+    direction: i32,
+) {
+    let order = doc.0.layers.clone();
+    let Some(index) = order.iter().position(|l| *l == layer) else {
+        return;
+    };
+    let target = index as i32 + direction;
+    if target < 0 || target as usize >= order.len() {
+        return;
+    }
+    let mut to = order.clone();
+    to.swap(index, target as usize);
+
+    let reorder = animus_core::doc::ReorderLayers {
+        from: order,
+        to: to.clone(),
+    };
+    match apply_command(&mut doc.0, &mut state.undo, Box::new(reorder)) {
+        Ok(changes) => pending.extend(changes.0),
+        Err(e) => {
+            error!("layer reorder failed: {e}");
+            return;
+        }
+    }
+
+    // Rewrite depths to match the new order: index * 0.01, back to front.
+    for (i, lid) in to.iter().enumerate() {
+        let Some(l) = doc.0.layer_data.get(lid) else {
+            continue;
+        };
+        let want = i as f32 * 0.01;
+        if (l.depth - want).abs() > f32::EPSILON {
+            let cmd = animus_core::doc::SetLayerScalar {
+                layer: *lid,
+                which: animus_core::doc::LayerScalar::Depth,
+                from: l.depth,
+                to: want,
+            };
+            match apply_command(&mut doc.0, &mut state.undo, Box::new(cmd)) {
+                Ok(changes) => pending.extend(changes.0),
+                Err(e) => error!("depth rewrite failed: {e}"),
+            }
+        }
+    }
+    state.undo.break_merge();
 }

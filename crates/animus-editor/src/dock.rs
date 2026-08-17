@@ -5,14 +5,25 @@
 //! wants to change something returns the intent rather than reaching into
 //! `Project`.
 
-use animus_core::doc::{Project, PuppetKind};
+use animus_core::doc::Project;
 use animus_runtime::DocumentRes;
 use bevy_egui::egui;
 
 use crate::import::ImportStatus;
+use crate::inspect::{InspectorEdit, inspector_ui};
 use crate::state::{EditMode, EditorState, Selection, TabKind, Tool};
 use crate::theme;
 use crate::viewport::{ViewportInput, ViewportTarget, viewport_widget};
+
+/// Everything the dock produced this frame, for the writer systems.
+#[derive(Debug, Default)]
+pub struct DockOutput {
+    pub viewport_input: Option<ViewportInput>,
+    pub inspector_edits: Vec<InspectorEdit>,
+    pub layer_move: Option<(animus_core::ids::LayerId, i32)>,
+    pub wants_undo: bool,
+    pub wants_redo: bool,
+}
 
 /// A small tracked label, the system's "label" role.
 fn label(ui: &mut egui::Ui, text: &str) {
@@ -56,6 +67,13 @@ pub struct TabViewer<'a> {
     pub viewport_texture: Option<egui::TextureId>,
     pub target: Option<&'a ViewportTarget>,
     pub import_status: &'a ImportStatus,
+    /// Filled by the Inspector tab; the writer system applies them.
+    pub inspector_edits: Vec<InspectorEdit>,
+    pub wants_undo: bool,
+    pub wants_redo: bool,
+    /// Layer the operator asked to move, and the direction (+1 toward the
+    /// front of the paint order).
+    pub layer_move: Option<(animus_core::ids::LayerId, i32)>,
     /// Filled in by the viewport tab, read by the caller afterwards. The
     /// panel cannot touch the camera itself: it runs inside egui's closure,
     /// where the ECS is not available.
@@ -143,32 +161,43 @@ impl TabViewer<'_> {
 
         // Painted back to front, so the topmost layer reads at the top of the
         // list — the order an artist expects, not the order the Vec is in.
-        for layer_id in self.doc.layers.iter().rev() {
-            let Some(layer) = self.doc.layer_data.get(layer_id) else {
+        // The arrows move a layer within the paint order; the writer turns
+        // that into a ReorderLayers command plus the depth rewrite that
+        // keeps `layer.depth` the single source of truth for world Z.
+        let layer_ids: Vec<_> = self.doc.layers.iter().rev().copied().collect();
+        for layer_id in layer_ids {
+            let Some(layer) = self.doc.layer_data.get(&layer_id) else {
                 continue;
             };
-            let selected = self.state.selection == Selection::Layer(*layer_id);
-            let response = ui.add(
-                egui::Button::new(
-                    egui::RichText::new(&layer.name)
-                        .size(12.5)
-                        .color(if selected { theme::BRIGHT } else { theme::INK }),
-                )
-                .fill(if selected {
-                    theme::WELL_HOVER
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
-                .corner_radius(theme::R_INPUT)
-                .min_size(egui::vec2(ui.available_width(), 0.0)),
-            );
-            if response.clicked() {
-                self.state.selection = Selection::Layer(*layer_id);
-            }
+            let selected = self.state.selection == Selection::Layer(layer_id);
             ui.horizontal(|ui| {
-                ui.add_space(theme::S_SM);
-                ui.label(data(format!("z {:.2}", layer.depth)));
-                ui.label(data(format!("{} puppets", layer.contents.len())));
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new(&layer.name)
+                                .size(12.5)
+                                .color(if selected { theme::BRIGHT } else { theme::INK }),
+                        )
+                        .fill(if selected {
+                            theme::WELL_HOVER
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        })
+                        .corner_radius(theme::R_INPUT),
+                    )
+                    .clicked()
+                {
+                    self.state.selection = Selection::Layer(layer_id);
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("▼").clicked() {
+                        self.layer_move = Some((layer_id, -1));
+                    }
+                    if ui.small_button("▲").clicked() {
+                        self.layer_move = Some((layer_id, 1));
+                    }
+                    ui.label(data(format!("z {:.2}", layer.depth)));
+                });
             });
         }
     }
@@ -282,41 +311,50 @@ impl TabViewer<'_> {
     }
 
     fn inspector(&mut self, ui: &mut egui::Ui) {
-        match self.state.selection {
-            Selection::None => stub(ui, "Nothing selected.", "Pick a layer, joint or bone."),
-            Selection::Layer(id) => {
-                let Some(layer) = self.doc.layer_data.get(&id) else {
-                    return;
-                };
-                label(ui, "layer");
-                row(ui, "name", layer.name.clone());
-                row(ui, "depth", format!("{:.3}", layer.depth));
-                row(ui, "opacity", format!("{:.2}", layer.opacity));
-                row(ui, "puppets", layer.contents.len().to_string());
+        let edits = inspector_ui(ui, self.doc, self.state);
+        self.inspector_edits.extend(edits);
+
+        ui.add_space(theme::S_MD);
+        self.undo_history(ui);
+    }
+
+    /// The undo history: labels, newest first, and the two buttons.
+    ///
+    /// The list is read straight from the stack, so what it shows is what
+    /// Ctrl+Z will actually do — not a parallel record that can drift.
+    fn undo_history(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            egui::RichText::new("HISTORY")
+                .size(10.5)
+                .color(theme::FAINT)
+                .strong(),
+        );
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(self.state.undo.can_undo(), egui::Button::new("Undo"))
+                .clicked()
+            {
+                self.wants_undo = true;
             }
-            Selection::Puppet(id) => {
-                let Some(puppet) = self.doc.puppets.get(&id) else {
-                    return;
-                };
-                label(ui, "puppet");
-                row(ui, "name", puppet.name.clone());
-                if let PuppetKind::Mesh(m) = &puppet.kind {
-                    row(ui, "vertices", m.mesh.positions.len().to_string());
-                    row(ui, "triangles", (m.mesh.triangles.len() / 3).to_string());
-                    row(ui, "joints", m.skeleton.joints.len().to_string());
-                    row(ui, "bones", m.skeleton.bones.len().to_string());
-                }
+            if ui
+                .add_enabled(self.state.undo.can_redo(), egui::Button::new("Redo"))
+                .clicked()
+            {
+                self.wants_redo = true;
             }
-            Selection::Joint(pid, jid) => {
-                label(ui, "joint");
-                row(ui, "id", format!("{}", jid.0));
-                row(ui, "puppet", format!("{}", pid.0));
-            }
-            Selection::Bone(pid, bid) => {
-                label(ui, "bone");
-                row(ui, "id", format!("{}", bid.0));
-                row(ui, "puppet", format!("{}", pid.0));
-            }
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} steps · {:.1} MB",
+                    self.state.undo.len(),
+                    self.state.undo.memory_bytes() as f64 / (1024.0 * 1024.0)
+                ))
+                .monospace()
+                .size(9.5)
+                .color(theme::FAINT),
+            );
+        });
+        for label in self.state.undo.labels().take(12) {
+            ui.label(egui::RichText::new(label).size(11.5).color(theme::DIM));
         }
     }
 
@@ -343,14 +381,14 @@ pub fn draw(
     viewport_texture: Option<egui::TextureId>,
     target: Option<&ViewportTarget>,
     import_status: &ImportStatus,
-) -> Option<ViewportInput> {
+) -> DockOutput {
     // `CentralPanel::show` is deprecated in egui 0.34 in favour of
     // `show_inside`, which needs a `Ui` — and there is no non-deprecated way
     // to get a root `Ui` from a `Context`. egui's own `show_dyn` carries the
     // same `expect(deprecated)` for the same reason. Revisit when egui offers
     // a top-level replacement.
     #![expect(deprecated)]
-    let mut viewport_input = None;
+    let mut out = DockOutput::default();
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(theme::APP_BG))
         .show(ctx, |ui| {
@@ -361,15 +399,23 @@ pub fn draw(
                 viewport_texture,
                 target,
                 import_status,
+                inspector_edits: Vec::new(),
+                layer_move: None,
+                wants_undo: false,
+                wants_redo: false,
                 viewport_input: None,
             };
             egui_dock::DockArea::new(&mut dock)
                 .style(dock_style(&ui.ctx().global_style()))
                 .show_inside(ui, &mut viewer);
-            viewport_input = viewer.viewport_input;
+            out.viewport_input = viewer.viewport_input;
+            out.inspector_edits = std::mem::take(&mut viewer.inspector_edits);
+            out.layer_move = viewer.layer_move;
+            out.wants_undo = viewer.wants_undo;
+            out.wants_redo = viewer.wants_redo;
             state.dock = dock;
         });
-    viewport_input
+    out
 }
 
 fn dock_style(base: &egui::Style) -> egui_dock::Style {

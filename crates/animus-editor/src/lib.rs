@@ -8,6 +8,7 @@ pub mod dock;
 pub mod drag;
 pub mod gizmos;
 pub mod import;
+pub mod inspect;
 pub mod interact;
 pub mod plugin;
 pub mod rig;

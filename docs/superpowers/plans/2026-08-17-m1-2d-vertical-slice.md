@@ -263,6 +263,8 @@ The moment the tool becomes convincing, and the place the one-way projection rul
 
 ## Task 11: `animus-editor` — inspector, layers, undo UI
 
+> **DONE 2026-08-17** — `inspect.rs` (hand-written rows emitting commands, per §10.4), history panel reading the undo stack directly, layer reordering that rewrites depths per §7.4. Two writer systems total: `apply_interactions` for the viewport, `apply_dock_output` for the panels — nothing else writes. The ◎ renders disabled with a tooltip naming M2. Skipped nothing, but Ctrl+Z as a *keyboard shortcut* lands with the binary in Task 13, where the window has key focus to read.
+
 - [ ] **Step 1:** Hand-written `fn inspect_bone(ui, &Bone) -> Option<DocCommand>` per type, per §10.4. No reflection-driven editing: it mutates in place and cannot be undone.
 - [ ] **Step 2:** Layer list with reordering that rewrites `depth` with even spacing (`index * 0.01`), so 2D and 3D interleave later for free.
 - [ ] **Step 3:** Ctrl+Z / Ctrl+Shift+Z, a visible undo history with labels, and the stack caps enforced.
