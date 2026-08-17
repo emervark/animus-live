@@ -5,8 +5,21 @@
 //! direction only — the document is never written from the scene.
 #![forbid(unsafe_code)]
 
+pub mod components;
 pub mod coords;
+pub mod index;
+pub mod plugin;
+pub mod project;
 pub mod skinning;
 
+pub use components::{
+    BoneOf, CompiledRigRef, EditorOnly, LayerOf, PuppetMesh, PuppetRoot, PuppetSolver,
+};
 pub use coords::{img_to_world, img_to_world_angle, world_to_img};
+pub use index::{EntityIndex, PuppetEntities};
+pub use plugin::{RuntimePlugin, SyncSet};
+pub use project::{
+    BuildWarnings, DocRevision, DocumentRes, PendingChangesRes, PuppetTextures, RenderScale,
+    puppet_pivot, sync_document,
+};
 pub use skinning::{BuildError, SkinnedMeshBuild, build_inverse_bindposes, build_skinned_mesh};
