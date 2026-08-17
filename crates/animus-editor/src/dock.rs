@@ -21,6 +21,8 @@ pub struct DockOutput {
     pub viewport_input: Option<ViewportInput>,
     pub inspector_edits: Vec<InspectorEdit>,
     pub layer_move: Option<(animus_core::ids::LayerId, i32)>,
+    /// The operator flipped the output vsync switch.
+    pub set_output_vsync: Option<bool>,
     pub wants_undo: bool,
     pub wants_redo: bool,
 }
@@ -67,6 +69,9 @@ pub struct TabViewer<'a> {
     pub viewport_texture: Option<egui::TextureId>,
     pub target: Option<&'a ViewportTarget>,
     pub import_status: &'a ImportStatus,
+    /// (vsync on, human description) of the output window, if the plugin is
+    /// installed.
+    pub output: Option<(bool, String)>,
     /// Filled by the Inspector tab; the writer system applies them.
     pub inspector_edits: Vec<InspectorEdit>,
     pub wants_undo: bool,
@@ -74,6 +79,8 @@ pub struct TabViewer<'a> {
     /// Layer the operator asked to move, and the direction (+1 toward the
     /// front of the paint order).
     pub layer_move: Option<(animus_core::ids::LayerId, i32)>,
+    /// The operator flipped the output vsync switch this frame.
+    pub set_output_vsync: Option<bool>,
     /// Filled in by the viewport tab, read by the caller afterwards. The
     /// panel cannot touch the camera itself: it runs inside egui's closure,
     /// where the ECS is not available.
@@ -370,6 +377,42 @@ impl TabViewer<'_> {
             format!("{:.2}, {:.2}", s.gravity.x, s.gravity.y),
         );
         row(ui, "state", if s.enabled { "running" } else { "paused" });
+
+        ui.add_space(theme::S_MD);
+        label(ui, "output");
+        if let Some((vsync, description)) = &self.output {
+            // The trade is stated next to the switch, because the operator
+            // deciding at a venue should not need the manual: M0-4 measured
+            // an output synced to a 30Hz display clamping the whole app.
+            let mut on = *vsync;
+            if ui
+                .checkbox(&mut on, egui::RichText::new("vsync").size(12.0))
+                .changed()
+            {
+                self.set_output_vsync = Some(on);
+            }
+            ui.label(
+                egui::RichText::new(if on {
+                    "Clean projector image; the editor runs at the projector's rate."
+                } else {
+                    "Fast editor; the projector may tear slightly."
+                })
+                .size(11.0)
+                .color(theme::FAINT),
+            );
+            ui.label(
+                egui::RichText::new(description.as_str())
+                    .monospace()
+                    .size(9.5)
+                    .color(theme::DIM),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new("no output window")
+                    .size(11.0)
+                    .color(theme::FAINT),
+            );
+        }
     }
 }
 
@@ -381,6 +424,7 @@ pub fn draw(
     viewport_texture: Option<egui::TextureId>,
     target: Option<&ViewportTarget>,
     import_status: &ImportStatus,
+    output: Option<(bool, String)>,
 ) -> DockOutput {
     // `CentralPanel::show` is deprecated in egui 0.34 in favour of
     // `show_inside`, which needs a `Ui` — and there is no non-deprecated way
@@ -399,8 +443,10 @@ pub fn draw(
                 viewport_texture,
                 target,
                 import_status,
+                output: output.clone(),
                 inspector_edits: Vec::new(),
                 layer_move: None,
+                set_output_vsync: None,
                 wants_undo: false,
                 wants_redo: false,
                 viewport_input: None,
@@ -411,6 +457,7 @@ pub fn draw(
             out.viewport_input = viewer.viewport_input;
             out.inspector_edits = std::mem::take(&mut viewer.inspector_edits);
             out.layer_move = viewer.layer_move;
+            out.set_output_vsync = viewer.set_output_vsync;
             out.wants_undo = viewer.wants_undo;
             out.wants_redo = viewer.wants_redo;
             state.dock = dock;

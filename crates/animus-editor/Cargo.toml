@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 animus-core.workspace = true
 animus-project.workspace = true
+animus-output.workspace = true
 animus-runtime.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true

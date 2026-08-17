@@ -223,8 +223,17 @@ pub fn apply_dock_output(
     mut doc: ResMut<DocumentRes>,
     mut state: ResMut<EditorState>,
     mut pending: ResMut<PendingChangesRes>,
+    mut output_config: Option<ResMut<animus_output::OutputConfig>>,
 ) {
     let Some(out) = out.0.take() else { return };
+
+    // The vsync switch is app state, not document state: it is not part of
+    // the show, so it does not go through the command layer or undo.
+    if let Some(vsync) = out.set_output_vsync
+        && let Some(cfg) = output_config.as_deref_mut()
+    {
+        cfg.vsync = vsync;
+    }
 
     for edit in out.inspector_edits {
         if let Some(command) = edit.command {

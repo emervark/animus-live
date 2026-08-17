@@ -1,0 +1,15 @@
+[package]
+name = "animus-output"
+description = "The Animus Live output window: the projector's half of the application."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+animus-core.workspace = true
+animus-runtime.workspace = true
+bevy.workspace = true
+glam.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

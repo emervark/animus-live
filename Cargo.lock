@@ -210,6 +210,7 @@ name = "animus-editor"
 version = "0.1.0"
 dependencies = [
  "animus-core",
+ "animus-output",
  "animus-project",
  "animus-runtime",
  "approx",
@@ -223,6 +224,18 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
+name = "animus-output"
+version = "0.1.0"
+dependencies = [
+ "animus-core",
+ "animus-runtime",
+ "bevy",
+ "glam 0.32.1",
  "thiserror 2.0.20",
  "tracing",
 ]

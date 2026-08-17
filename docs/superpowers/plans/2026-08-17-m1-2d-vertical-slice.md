@@ -275,6 +275,8 @@ The moment the tool becomes convincing, and the place the one-way projection rul
 
 ## Task 12: `animus-output` — the projector window
 
+> **DONE 2026-08-17** — `crates/animus-output`. Monitor choice is a pure function tested against the exact M0-4 incident (the TV enumerating first); an out-of-range `--output-monitor` clamps to the last display and logs, rather than silently reverting to the automatic rule. Vsync is a live toggle in the Solver panel with the trade stated beside it. Esc closes the focused output window and its camera in one frame. Step 4's layer-isolation assertion is carried by the camera carrying `RenderLayers::layer(0)` only; the human check stays on the release checklist as planned.
+
 M0-4 is the reference implementation, including its bug.
 
 **Files:** `crates/animus-output/` — `lib.rs`, `window.rs`, `monitor.rs`

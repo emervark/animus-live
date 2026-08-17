@@ -75,6 +75,8 @@ fn ui_system(
     status: Res<ImportStatus>,
     mut frame_input: ResMut<FrameViewportInput>,
     mut dock_out: ResMut<FrameDockOutput>,
+    output_state: Option<Res<animus_output::OutputState>>,
+    output_config: Option<Res<animus_output::OutputConfig>>,
     mut installed: Local<bool>,
 ) -> Result {
     let texture = contexts.image_id(&target.image);
@@ -85,7 +87,19 @@ fn ui_system(
         *installed = true;
     }
 
-    let mut out = dock::draw(ctx, &mut state, &doc, texture, Some(&target), &status);
+    let output_info = output_state
+        .as_ref()
+        .zip(output_config.as_ref())
+        .map(|(st, cfg)| (cfg.vsync, st.description.clone()));
+    let mut out = dock::draw(
+        ctx,
+        &mut state,
+        &doc,
+        texture,
+        Some(&target),
+        &status,
+        output_info,
+    );
     frame_input.0 = out.viewport_input.take();
     dock_out.0 = Some(out);
     let input = frame_input.0;
