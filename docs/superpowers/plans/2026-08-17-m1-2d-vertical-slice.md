@@ -303,6 +303,8 @@ M0-4 is the reference implementation, including its bug.
 
 ## Task 14: Round-trip and the fixtures
 
+> **DONE 2026-08-17** — `vertical_slice.rs` drives the *real* flow (build_import → rig tools → command stack → save → load) and asserts the two things hand-built round-trips cannot: `IdAlloc`'s watermark survives the disk so a reopened project cannot hand out a colliding ID, and the reloaded puppet still builds a GPU mesh. `spec/fixtures/m1-rigged/` carries deliberately hostile IDs (bones 907-before-350, joints 512/77/2003); mutating the bake to use an ID as an index fails its test. The migration guard picks the fixture up automatically. NaN-rejection was already covered in `roundtrip.rs`; the migration chain test in `migrations.rs`.
+
 - [ ] **Step 1:** Save a rigged puppet through the real UI, reload, and assert the reloaded `Project` equals the saved one — including `IdAlloc.next`, so reopening and adding a joint cannot collide with an existing ID.
 - [ ] **Step 2:** Golden fixtures in `spec/fixtures/m1-*/` with deliberately non-contiguous IDs.
 - [ ] **Step 3:** A migration test: hand-write a v1 file, load it through the chain, assert it lands in the current shape.

@@ -1,0 +1,303 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "name": "M1 Rigged Corpus",
+    "created_by": "animus 0.1.0",
+    "created_utc": "2026-08-17T00:00:00Z",
+    "modified_utc": "2026-08-17T00:00:00Z"
+  },
+  "next_id": 9001,
+  "assets": {
+    "41": {
+      "id": 41,
+      "sha256": "f545a1476bcc6bcbbe1852f2e91ac6df1cc3a6363a6f785759fde57e518dcbe1",
+      "kind": "image",
+      "original_name": "puppet-texture.png",
+      "byte_len": 37,
+      "width": 160,
+      "height": 160
+    }
+  },
+  "layers": [
+    9000
+  ],
+  "layer_data": {
+    "9000": {
+      "id": 9000,
+      "name": "Puppet",
+      "visible": true,
+      "opacity": 1.0,
+      "blend": "normal",
+      "depth": 0.02,
+      "transform": {
+        "flat": {
+          "translation": [
+            0.0,
+            0.0
+          ],
+          "rotation": 0.0,
+          "scale": [
+            1.0,
+            1.0
+          ]
+        }
+      },
+      "contents": [
+        613
+      ]
+    }
+  },
+  "puppets": {
+    "613": {
+      "id": 613,
+      "name": "rigged",
+      "kind": {
+        "type": "mesh",
+        "texture": 41,
+        "matte": {
+          "mode": "use_image_alpha"
+        },
+        "mesh": {
+          "positions": [
+            [
+              60.0,
+              20.0
+            ],
+            [
+              100.0,
+              20.0
+            ],
+            [
+              60.0,
+              80.0
+            ],
+            [
+              100.0,
+              80.0
+            ],
+            [
+              60.0,
+              140.0
+            ],
+            [
+              100.0,
+              140.0
+            ]
+          ],
+          "uvs": [
+            [
+              0.375,
+              0.125
+            ],
+            [
+              0.625,
+              0.125
+            ],
+            [
+              0.375,
+              0.5
+            ],
+            [
+              0.625,
+              0.5
+            ],
+            [
+              0.375,
+              0.875
+            ],
+            [
+              0.625,
+              0.875
+            ]
+          ],
+          "triangles": [
+            0,
+            1,
+            2,
+            2,
+            1,
+            3,
+            2,
+            3,
+            4,
+            4,
+            3,
+            5
+          ],
+          "source": "manual"
+        },
+        "skeleton": {
+          "joints": {
+            "512": {
+              "id": 512,
+              "name": "root",
+              "rest": [
+                80.0,
+                20.0
+              ],
+              "rest_angle": 0.0,
+              "inv_mass": 0.0,
+              "pinned": true
+            },
+            "77": {
+              "id": 77,
+              "name": "mid",
+              "rest": [
+                80.0,
+                80.0
+              ],
+              "rest_angle": 0.0,
+              "inv_mass": 1.0,
+              "pinned": false
+            },
+            "2003": {
+              "id": 2003,
+              "name": "tip",
+              "rest": [
+                80.0,
+                140.0
+              ],
+              "rest_angle": 0.0,
+              "inv_mass": 1.0,
+              "pinned": false
+            }
+          },
+          "bones": {
+            "907": {
+              "id": 907,
+              "name": "lower",
+              "a": 77,
+              "b": 2003,
+              "rest_length": null,
+              "stiffness": 0.7,
+              "damping": 0.1,
+              "length_mul": 1.0,
+              "attach_radius": 50.0
+            },
+            "350": {
+              "id": 350,
+              "name": "upper",
+              "a": 512,
+              "b": 77,
+              "rest_length": null,
+              "stiffness": 0.9,
+              "damping": 0.15,
+              "length_mul": 1.0,
+              "attach_radius": 45.0
+            }
+          }
+        },
+        "attachments": {
+          "entries": [
+            {
+              "vertex": 0,
+              "bone": 350,
+              "weight": 1.0,
+              "local": [
+                0.0,
+                20.0
+              ]
+            },
+            {
+              "vertex": 1,
+              "bone": 350,
+              "weight": 1.0,
+              "local": [
+                0.0,
+                -20.0
+              ]
+            },
+            {
+              "vertex": 2,
+              "bone": 350,
+              "weight": 0.46159527,
+              "local": [
+                60.0,
+                20.0
+              ]
+            },
+            {
+              "vertex": 2,
+              "bone": 907,
+              "weight": 0.5384047,
+              "local": [
+                0.0,
+                20.0
+              ]
+            },
+            {
+              "vertex": 3,
+              "bone": 350,
+              "weight": 0.46159527,
+              "local": [
+                60.0,
+                -20.0
+              ]
+            },
+            {
+              "vertex": 3,
+              "bone": 907,
+              "weight": 0.5384047,
+              "local": [
+                0.0,
+                -20.0
+              ]
+            },
+            {
+              "vertex": 4,
+              "bone": 907,
+              "weight": 1.0,
+              "local": [
+                60.0,
+                20.0
+              ]
+            },
+            {
+              "vertex": 5,
+              "bone": 907,
+              "weight": 1.0,
+              "local": [
+                60.0,
+                -20.0
+              ]
+            }
+          ]
+        },
+        "material": {
+          "tint": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ],
+          "alpha_mode": "blend"
+        },
+        "solver_override": null
+      }
+    }
+  },
+  "bindings": [],
+  "solver": {
+    "hz": 120,
+    "iterations": 8,
+    "gravity": [
+      0.0,
+      0.0
+    ],
+    "global_damping": 0.98,
+    "max_substeps_per_frame": 8,
+    "enabled": true
+  },
+  "stage": {
+    "canvas": [
+      1920,
+      1080
+    ],
+    "background": [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  }
+}
