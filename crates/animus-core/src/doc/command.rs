@@ -30,7 +30,7 @@ use std::any::Any;
 use glam::Vec2;
 use thiserror::Error;
 
-use super::{AssetRef, Layer, Puppet, PuppetKind};
+use super::{AssetRef, AttachmentTable, Layer, Puppet, PuppetKind, SkeletonData};
 use crate::ids::{BoneId, JointId, LayerId, PuppetId};
 
 /// What a command changed, at the finest granularity it knows.
@@ -647,6 +647,96 @@ impl DocCommand for RemovePuppet {
                 .as_ref()
                 .map(|(p, ..)| puppet_bytes(p))
                 .unwrap_or(0)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Replace a puppet's skeleton and attachments together.
+///
+/// **One command for every rig edit, and a snapshot rather than an inverse
+/// pair.** Adding a joint is small, but deleting one cascades: every bone
+/// that names it goes too, and every attachment those bones held has to be
+/// recomputed. Writing an inverse for that is four rules that must agree
+/// with each other forever; a skeleton is tens of joints, so keeping both
+/// copies is provably correct and costs nothing measurable.
+///
+/// The mesh is deliberately *not* part of this. Rig edits do not touch
+/// vertices, so the expensive half of a puppet is never snapshotted and the
+/// runtime is told `SkeletonChanged`, which does not rebuild the GPU mesh.
+#[derive(Debug, Clone)]
+pub struct SetSkeleton {
+    pub puppet: PuppetId,
+    pub label: String,
+    pub after: (SkeletonData, AttachmentTable),
+    /// Captured by `apply`, so the caller can build the command before
+    /// deciding to run it.
+    pub before: Option<(SkeletonData, AttachmentTable)>,
+}
+
+impl SetSkeleton {
+    pub fn new(
+        puppet: PuppetId,
+        label: impl Into<String>,
+        skeleton: SkeletonData,
+        attachments: AttachmentTable,
+    ) -> Self {
+        Self {
+            puppet,
+            label: label.into(),
+            after: (skeleton, attachments),
+            before: None,
+        }
+    }
+}
+
+fn skeleton_slot(
+    p: &mut super::Project,
+    id: PuppetId,
+) -> Result<&mut super::MeshPuppet, CommandError> {
+    let puppet = p
+        .puppets
+        .get_mut(&id)
+        .ok_or(CommandError::NoSuchPuppet(id))?;
+    match &mut puppet.kind {
+        PuppetKind::Mesh(m) => Ok(m),
+        _ => Err(CommandError::NotAMeshPuppet(id)),
+    }
+}
+
+impl DocCommand for SetSkeleton {
+    fn label(&self) -> &str {
+        &self.label
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let mp = skeleton_slot(p, self.puppet)?;
+        if self.before.is_none() {
+            self.before = Some((mp.skeleton.clone(), mp.attachments.clone()));
+        }
+        mp.skeleton = self.after.0.clone();
+        mp.attachments = self.after.1.clone();
+        Ok(PendingChanges::one(DocChange::SkeletonChanged(self.puppet)))
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let (skeleton, attachments) = self
+            .before
+            .clone()
+            .expect("revert before apply: the undo stack only reverts applied commands");
+        let mp = skeleton_slot(p, self.puppet)?;
+        mp.skeleton = skeleton;
+        mp.attachments = attachments;
+        Ok(PendingChanges::one(DocChange::SkeletonChanged(self.puppet)))
+    }
+
+    fn memory_bytes(&self) -> usize {
+        let one = |s: &(SkeletonData, AttachmentTable)| {
+            s.0.joints.len() * 64 + s.0.bones.len() * 64 + s.1.entries.len() * 32
+        };
+        std::mem::size_of_val(self) + one(&self.after) + self.before.as_ref().map(one).unwrap_or(0)
     }
 
     fn as_any(&self) -> &dyn Any {

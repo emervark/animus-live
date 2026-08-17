@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
+use crate::gizmos;
 use crate::import::{self, ImportStatus, ProjectRoot};
 use crate::state::{EditorState, save_layout};
 use crate::viewport::{self, ViewportCamera, ViewportTarget};
@@ -28,9 +29,10 @@ impl Plugin for EditorPlugin {
             .init_resource::<ImportStatus>()
             .init_resource::<ProjectRoot>()
             .add_systems(Update, import::handle_dropped_files)
+            .add_systems(PostUpdate, gizmos::draw_rigs)
             // Ordered, not incidental: the window camera must exist before
             // the viewport's offscreen one. See `setup`.
-            .add_systems(Startup, (setup, viewport::setup).chain())
+            .add_systems(Startup, (setup, viewport::setup, gizmos::setup).chain())
             .configure_sets(
                 EguiPrimaryContextPass,
                 (EditorSet::Ui, EditorSet::Commands).chain(),

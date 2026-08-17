@@ -238,6 +238,8 @@ The user-visible spine of M1: image in, puppet out.
 
 ## Task 9: `animus-editor` — rigging tools and gizmos
 
+> **DONE 2026-08-17** — `animus-core` gained `SetSkeleton` (one snapshot command for every rig edit, because deleting a joint cascades); `animus-editor/src/rig.rs` holds the tool logic as pure functions (egui-free, 7 tests) and `gizmos.rs` draws the rig on layer 1 in ink-ramp colours. Weight painting stays in M6, as planned; a wireframe budget of 8k triangles guards the §10.3 warning. Step 4's measurement at 10k vertices still needs a live scene — deferred to the moment the app first runs.
+
 - [ ] **Step 1: Joint and bone placement tools** — click to place a joint, drag joint-to-joint to create a bone, with snapping to existing joints.
 - [ ] **Step 2: `skeleton::auto_attach`** with a live attachment-radius gizmo, and a re-attach command after skeleton edits.
 - [ ] **Step 3: Gizmos on `RenderLayers::layer(1)`** — bones, joints, mesh wireframe, attachment radii, selection. Layer 1 keeps them off the projector; M0-4 confirmed the isolation works.

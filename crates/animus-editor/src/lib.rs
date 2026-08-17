@@ -5,8 +5,10 @@
 #![forbid(unsafe_code)]
 
 pub mod dock;
+pub mod gizmos;
 pub mod import;
 pub mod plugin;
+pub mod rig;
 pub mod state;
 pub mod theme;
 pub mod viewport;
