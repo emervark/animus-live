@@ -11,6 +11,7 @@ use bevy_egui::egui;
 
 use crate::state::{EditMode, EditorState, Selection, TabKind, Tool};
 use crate::theme;
+use crate::viewport::{ViewportInput, ViewportTarget, viewport_widget};
 
 /// A small tracked label, the system's "label" role.
 fn label(ui: &mut egui::Ui, text: &str) {
@@ -52,6 +53,11 @@ pub struct TabViewer<'a> {
     pub state: &'a mut EditorState,
     pub doc: &'a Project,
     pub viewport_texture: Option<egui::TextureId>,
+    pub target: Option<&'a ViewportTarget>,
+    /// Filled in by the viewport tab, read by the caller afterwards. The
+    /// panel cannot touch the camera itself: it runs inside egui's closure,
+    /// where the ECS is not available.
+    pub viewport_input: Option<ViewportInput>,
 }
 
 impl egui_dock::TabViewer for TabViewer<'_> {
@@ -91,32 +97,40 @@ impl egui_dock::TabViewer for TabViewer<'_> {
 
 impl TabViewer<'_> {
     fn viewport(&mut self, ui: &mut egui::Ui) {
-        let rect = ui.available_rect_before_wrap();
-        ui.painter().rect_filled(rect, 0.0, theme::SCREEN_BLACK);
+        let available = ui.available_size();
+        let size = egui::vec2(available.x.max(16.0), available.y.max(16.0));
+        let input = viewport_widget(ui, self.viewport_texture, size);
+        self.status_strip(ui, input.rect);
+        self.viewport_input = Some(input);
+    }
 
-        match self.viewport_texture {
-            Some(id) => {
-                // Task 7 replaces this with the interactive image. Drawing it
-                // plainly here keeps the layout honest in the meantime.
-                let size = rect.size();
-                ui.painter().image(
-                    id,
-                    rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                let _ = size;
-            }
-            None => {
-                ui.painter().text(
-                    rect.center(),
-                    egui::Align2::CENTER_CENTER,
-                    "no viewport target yet",
-                    egui::FontId::monospace(11.0),
-                    theme::FAINT,
-                );
-            }
+    /// What is true right now, in one line at the bottom of the view.
+    ///
+    /// World-per-pixel is here because every offset in this editor is quoted
+    /// in pixels, and without the conversion on screen a coordinate bug is a
+    /// guessing game. M0-2 spent three rounds on one for want of this line.
+    fn status_strip(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let Some(target) = self.target else { return };
+        let strip = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 20.0), rect.max);
+        ui.painter().rect_filled(strip, 0.0, theme::STATUS_BG);
+
+        let mut text = format!(
+            "1 px = {:.4} world    {} x {}",
+            target.world_per_pixel, target.size.x, target.size.y
+        );
+        if let Some(c) = target.cursor_world {
+            text.push_str(&format!("    cursor {:.2}, {:.2}", c.x, c.y));
         }
+        if let Some(c) = target.last_click_world {
+            text.push_str(&format!("    click {:.2}, {:.2}", c.x, c.y));
+        }
+        ui.painter().text(
+            strip.left_center() + egui::vec2(theme::S_SM, 0.0),
+            egui::Align2::LEFT_CENTER,
+            text,
+            egui::FontId::monospace(9.5),
+            theme::DIM,
+        );
     }
 
     fn layers(&mut self, ui: &mut egui::Ui) {
@@ -300,14 +314,20 @@ impl TabViewer<'_> {
 }
 
 /// Draw the whole dock. Called from the egui pass.
-pub fn draw(ctx: &egui::Context, state: &mut EditorState, doc: &DocumentRes) {
+pub fn draw(
+    ctx: &egui::Context,
+    state: &mut EditorState,
+    doc: &DocumentRes,
+    viewport_texture: Option<egui::TextureId>,
+    target: Option<&ViewportTarget>,
+) -> Option<ViewportInput> {
     // `CentralPanel::show` is deprecated in egui 0.34 in favour of
     // `show_inside`, which needs a `Ui` — and there is no non-deprecated way
     // to get a root `Ui` from a `Context`. egui's own `show_dyn` carries the
     // same `expect(deprecated)` for the same reason. Revisit when egui offers
     // a top-level replacement.
     #![expect(deprecated)]
-    let viewport_texture = None; // Task 7 supplies this
+    let mut viewport_input = None;
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(theme::APP_BG))
         .show(ctx, |ui| {
@@ -316,12 +336,16 @@ pub fn draw(ctx: &egui::Context, state: &mut EditorState, doc: &DocumentRes) {
                 state,
                 doc: &doc.0,
                 viewport_texture,
+                target,
+                viewport_input: None,
             };
             egui_dock::DockArea::new(&mut dock)
                 .style(dock_style(&ui.ctx().global_style()))
                 .show_inside(ui, &mut viewer);
+            viewport_input = viewer.viewport_input;
             state.dock = dock;
         });
+    viewport_input
 }
 
 fn dock_style(base: &egui::Style) -> egui_dock::Style {

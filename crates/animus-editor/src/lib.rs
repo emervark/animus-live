@@ -8,6 +8,8 @@ pub mod dock;
 pub mod plugin;
 pub mod state;
 pub mod theme;
+pub mod viewport;
 
 pub use plugin::{EditorPlugin, EditorSet};
 pub use state::{EditMode, EditorState, Selection, TabKind, Tool};
+pub use viewport::{ViewportInput, ViewportTarget};

@@ -4,6 +4,7 @@ use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
 use crate::state::{EditorState, save_layout};
+use crate::viewport::{self, ViewportCamera, ViewportTarget};
 use crate::{dock, theme};
 
 /// The editor's systems, in `EguiPrimaryContextPass`.
@@ -23,7 +24,9 @@ impl Plugin for EditorPlugin {
             app.add_plugins(EguiPlugin::default());
         }
         app.init_resource::<EditorState>()
-            .add_systems(Startup, setup)
+            // Ordered, not incidental: the window camera must exist before
+            // the viewport's offscreen one. See `setup`.
+            .add_systems(Startup, (setup, viewport::setup).chain())
             .configure_sets(
                 EguiPrimaryContextPass,
                 (EditorSet::Ui, EditorSet::Commands).chain(),
@@ -45,19 +48,57 @@ fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn ui_system(
     mut contexts: EguiContexts,
     mut state: ResMut<EditorState>,
     doc: Res<animus_runtime::DocumentRes>,
+    mut target: ResMut<ViewportTarget>,
+    mut images: ResMut<Assets<Image>>,
+    mut cameras: Query<
+        (&Camera, &GlobalTransform, &mut Projection, &mut Transform),
+        With<ViewportCamera>,
+    >,
     mut installed: Local<bool>,
 ) -> Result {
+    let texture = contexts.image_id(&target.image);
     let ctx = contexts.ctx_mut()?;
     if !*installed {
         theme::install(ctx);
         theme::install_fonts(ctx);
         *installed = true;
     }
-    dock::draw(ctx, &mut state, &doc);
+
+    let input = dock::draw(ctx, &mut state, &doc, texture, Some(&target));
+
+    if let Some(input) = input {
+        // Resize first: the camera reads the target's size when it
+        // unprojects, so a stale size is a wrong world position for one
+        // frame — which is exactly the kind of one-frame error that reads as
+        // "clicking is slightly off" and takes a day to find.
+        let desired = input.desired_target_size();
+        if desired != target.size
+            && let Some(mut image) = images.get_mut(&target.image)
+        {
+            image.resize(bevy::render::render_resource::Extent3d {
+                width: desired.x,
+                height: desired.y,
+                ..default()
+            });
+            target.size = desired;
+        }
+
+        if let Ok((camera, global, mut projection, mut transform)) = cameras.single_mut() {
+            viewport::apply_viewport_input(
+                &input,
+                camera,
+                global,
+                &mut projection,
+                &mut transform,
+                &mut target,
+            );
+        }
+    }
     Ok(())
 }
 

@@ -205,6 +205,8 @@ The single point where the document meets Bevy's GPU skinning. Spec §7.
 
 ## Task 7: `animus-editor` — the viewport
 
+> **DONE 2026-08-17** — `crates/animus-editor/src/viewport/`. Split into an egui half and a camera half, because M0-2 proved the maths can be right while the gate is wrong. Step 5's synthesised-input test exists: clicks are driven through a bare `egui::Context` at 1.0/1.25/1.5/2.0 display scales and land within 1px. Removing `.sense(click_and_drag())` — the original M0-2 bug — fails three of them.
+
 M0-2 is the reference implementation for this task, including its three fixes. Reread `docs/spikes/m0-2-egui-viewport.md` before starting.
 
 **Files:** `src/viewport/{mod.rs,camera.rs,input.rs}`
