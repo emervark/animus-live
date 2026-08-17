@@ -3,6 +3,7 @@
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass};
 
+use crate::import::{self, ImportStatus, ProjectRoot};
 use crate::state::{EditorState, save_layout};
 use crate::viewport::{self, ViewportCamera, ViewportTarget};
 use crate::{dock, theme};
@@ -24,6 +25,9 @@ impl Plugin for EditorPlugin {
             app.add_plugins(EguiPlugin::default());
         }
         app.init_resource::<EditorState>()
+            .init_resource::<ImportStatus>()
+            .init_resource::<ProjectRoot>()
+            .add_systems(Update, import::handle_dropped_files)
             // Ordered, not incidental: the window camera must exist before
             // the viewport's offscreen one. See `setup`.
             .add_systems(Startup, (setup, viewport::setup).chain())
@@ -59,6 +63,7 @@ fn ui_system(
         (&Camera, &GlobalTransform, &mut Projection, &mut Transform),
         With<ViewportCamera>,
     >,
+    status: Res<ImportStatus>,
     mut installed: Local<bool>,
 ) -> Result {
     let texture = contexts.image_id(&target.image);
@@ -69,7 +74,7 @@ fn ui_system(
         *installed = true;
     }
 
-    let input = dock::draw(ctx, &mut state, &doc, texture, Some(&target));
+    let input = dock::draw(ctx, &mut state, &doc, texture, Some(&target), &status);
 
     if let Some(input) = input {
         // Resize first: the camera reads the target's size when it

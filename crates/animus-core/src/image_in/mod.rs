@@ -25,6 +25,8 @@
 
 mod decode;
 mod matte;
+mod pipeline;
 
 pub use decode::{ImageFormat, ImportError, decode};
 pub use matte::{MatteReport, is_effectively_opaque, resolve_alpha};
+pub use pipeline::{ImportedMesh, mesh_from_image, starting_params};

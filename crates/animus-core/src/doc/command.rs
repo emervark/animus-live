@@ -30,7 +30,7 @@ use std::any::Any;
 use glam::Vec2;
 use thiserror::Error;
 
-use super::{Layer, Puppet, PuppetKind};
+use super::{AssetRef, Layer, Puppet, PuppetKind};
 use crate::ids::{BoneId, JointId, LayerId, PuppetId};
 
 /// What a command changed, at the finest granularity it knows.
@@ -647,6 +647,92 @@ impl DocCommand for RemovePuppet {
                 .as_ref()
                 .map(|(p, ..)| puppet_bytes(p))
                 .unwrap_or(0)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Where an imported puppet should land.
+#[derive(Debug, Clone)]
+pub enum ImportTarget {
+    /// Into a layer that already exists.
+    Existing(LayerId),
+    /// Into a new layer, created by this same command.
+    NewLayer(Layer),
+}
+
+/// One import: the asset, the puppet, and the layer it lands in.
+///
+/// **Deliberately one command rather than three.** An import that produced a
+/// bad silhouette is undone by one Ctrl+Z, not by three — and three separate
+/// commands could be interleaved with something else and then partially
+/// undone, leaving a puppet whose texture no longer exists.
+#[derive(Debug, Clone)]
+pub struct ImportImage {
+    pub asset: AssetRef,
+    pub puppet: Puppet,
+    pub target: ImportTarget,
+}
+
+impl DocCommand for ImportImage {
+    fn label(&self) -> &str {
+        "Import image"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let puppet_id = self.puppet.id;
+        if p.puppets.contains_key(&puppet_id) {
+            return Err(CommandError::PuppetExists(puppet_id));
+        }
+        p.assets.insert(self.asset.id, self.asset.clone());
+
+        let mut changes = PendingChanges::none();
+        let layer_id = match &self.target {
+            ImportTarget::Existing(id) => *id,
+            ImportTarget::NewLayer(layer) => {
+                p.layer_data.insert(layer.id, layer.clone());
+                p.layers.push(layer.id);
+                changes.extend(PendingChanges::one(DocChange::LayerAdded(layer.id)));
+                layer.id
+            }
+        };
+
+        p.layer_data
+            .get_mut(&layer_id)
+            .ok_or(CommandError::NoSuchLayer(layer_id))?
+            .contents
+            .push(puppet_id);
+        p.puppets.insert(puppet_id, self.puppet.clone());
+
+        changes.extend(PendingChanges::one(DocChange::PuppetAdded(puppet_id)));
+        Ok(changes)
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let puppet_id = self.puppet.id;
+        p.puppets.shift_remove(&puppet_id);
+        p.assets.shift_remove(&self.asset.id);
+
+        let mut changes = PendingChanges::one(DocChange::PuppetRemoved(puppet_id));
+        match &self.target {
+            ImportTarget::Existing(id) => {
+                if let Some(layer) = p.layer_data.get_mut(id) {
+                    layer.contents.retain(|c| *c != puppet_id);
+                }
+            }
+            ImportTarget::NewLayer(layer) => {
+                p.layer_data.shift_remove(&layer.id);
+                p.layers.retain(|l| *l != layer.id);
+                changes.extend(PendingChanges::one(DocChange::LayerRemoved(layer.id)));
+            }
+        }
+        Ok(changes)
+    }
+
+    fn memory_bytes(&self) -> usize {
+        std::mem::size_of_val(self) + puppet_bytes(&self.puppet) + self.asset.original_name.len()
     }
 
     fn as_any(&self) -> &dyn Any {

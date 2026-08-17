@@ -5,11 +5,13 @@
 #![forbid(unsafe_code)]
 
 pub mod dock;
+pub mod import;
 pub mod plugin;
 pub mod state;
 pub mod theme;
 pub mod viewport;
 
+pub use import::{ImportStatus, ProjectRoot};
 pub use plugin::{EditorPlugin, EditorSet};
 pub use state::{EditMode, EditorState, Selection, TabKind, Tool};
 pub use viewport::{ViewportInput, ViewportTarget};

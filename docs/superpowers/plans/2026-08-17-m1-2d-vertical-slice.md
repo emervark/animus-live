@@ -222,6 +222,8 @@ M0-2 is the reference implementation for this task, including its three fixes. R
 
 ## Task 8: `animus-editor` — import to puppet
 
+> **DONE 2026-08-17** — `animus-core/src/image_in/pipeline.rs` (Bevy-free, the whole import testable from an in-memory PNG) and `animus-editor/src/import.rs`. One `ImportImage` command carries asset, layer and puppet, so a bad import is one Ctrl+Z. Errors are refused before the asset store is touched, so a rejected import leaves nothing on disk.
+
 The user-visible spine of M1: image in, puppet out.
 
 **Files:** `src/import.rs`, `src/panels/assets.rs`

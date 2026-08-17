@@ -57,6 +57,20 @@ pub enum ImportError {
 
     #[error("this image is {w}x{h}, larger than the {max}px limit")]
     TooLarge { w: u32, h: u32, max: u32 },
+
+    /// Names the knob rather than the symptom. The underlying error says
+    /// "no opaque region", which sends the artist to look at their artwork
+    /// instead of at the slider they just moved.
+    #[error(
+        "nothing in this image is more opaque than the alpha threshold ({threshold}).          Lower the threshold, or check the image really has a subject in it."
+    )]
+    NothingAboveThreshold { threshold: u8 },
+
+    #[error("the outline could not be turned into a mesh: {detail}")]
+    CouldNotTriangulate { detail: String },
+
+    #[error("the outline produced no triangles, so there is nothing to rig")]
+    EmptyMesh,
 }
 
 /// Hard ceiling on either dimension.

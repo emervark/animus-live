@@ -64,7 +64,18 @@ pub fn resolve_alpha(
     }
 
     if covered == 0 {
-        return Err(ImportError::FullyTransparent);
+        // These two are worth telling apart. "Fully transparent" sends
+        // someone back to their art program; "nothing above the threshold"
+        // sends them to the slider they just moved, which is usually where
+        // the problem actually is.
+        let has_any_alpha = img.pixels().any(|p| p.0[3] > 0);
+        return Err(if has_any_alpha {
+            ImportError::NothingAboveThreshold {
+                threshold: alpha_threshold,
+            }
+        } else {
+            ImportError::FullyTransparent
+        });
     }
 
     Ok(MatteReport {
@@ -139,6 +150,22 @@ mod tests {
         assert_eq!(
             resolve_alpha(&mut img, &params(), 8).unwrap_err(),
             ImportError::FullyTransparent
+        );
+    }
+
+    #[test]
+    fn a_threshold_above_the_artwork_is_not_reported_as_transparency() {
+        // The image has a subject; the threshold is simply too high. Saying
+        // "fully transparent" here would send the artist to the wrong place.
+        let mut img = disc(32, 32, 10.0);
+        for px in img.pixels_mut() {
+            if px.0[3] == 255 {
+                px.0[3] = 100;
+            }
+        }
+        assert_eq!(
+            resolve_alpha(&mut img, &params(), 200).unwrap_err(),
+            ImportError::NothingAboveThreshold { threshold: 200 }
         );
     }
 

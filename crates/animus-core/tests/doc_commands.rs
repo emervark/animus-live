@@ -246,6 +246,87 @@ fn replace_puppet_round_trips_a_5k_vertex_mesh() {
     assert_eq!(snapshot(&p), before);
 }
 
+#[test]
+fn importing_an_image_is_one_undoable_step() {
+    // Asset, layer and puppet arrive together and leave together. Three
+    // separate commands could be partly undone, leaving a puppet whose
+    // texture no longer exists.
+    let mut p = fixture();
+    let before = snapshot(&p);
+    let mut stack = UndoStack::new();
+
+    let mut imported = mesh_puppet(16);
+    imported.id = PuppetId(160);
+    let asset = AssetRef {
+        id: AssetId(161),
+        sha256: "0".repeat(64),
+        kind: AssetKind::Image,
+        original_name: "dancer.png".into(),
+        byte_len: 1234,
+        width: Some(512),
+        height: Some(512),
+    };
+
+    apply_command(
+        &mut p,
+        &mut stack,
+        Box::new(ImportImage {
+            asset,
+            puppet: imported,
+            target: ImportTarget::NewLayer(Layer::new(LayerId(162), "dancer")),
+        }),
+    )
+    .expect("import");
+
+    assert!(p.puppets.contains_key(&PuppetId(160)));
+    assert!(p.assets.contains_key(&AssetId(161)));
+    assert!(p.layer_data.contains_key(&LayerId(162)));
+    assert_eq!(stack.len(), 1, "one import, one undo step");
+
+    stack.undo(&mut p).unwrap().expect("revert");
+    assert_eq!(
+        snapshot(&p),
+        before,
+        "undoing an import must leave no asset, layer or puppet behind"
+    );
+}
+
+#[test]
+fn importing_into_an_existing_layer_does_not_remove_it_on_undo() {
+    // The layer was not created by the import, so undoing the import must
+    // not take it — only what it added.
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+
+    let mut imported = mesh_puppet(8);
+    imported.id = PuppetId(170);
+    apply_command(
+        &mut p,
+        &mut stack,
+        Box::new(ImportImage {
+            asset: AssetRef {
+                id: AssetId(171),
+                sha256: "1".repeat(64),
+                kind: AssetKind::Image,
+                original_name: "second.png".into(),
+                byte_len: 9,
+                width: None,
+                height: None,
+            },
+            puppet: imported,
+            target: ImportTarget::Existing(LAYER),
+        }),
+    )
+    .unwrap();
+
+    stack.undo(&mut p).unwrap().unwrap();
+    assert!(
+        p.layer_data.contains_key(&LAYER),
+        "an existing layer must survive undoing an import into it"
+    );
+    assert!(!p.puppets.contains_key(&PuppetId(170)));
+}
+
 // ── granularity ────────────────────────────────────────────────────────
 
 #[test]

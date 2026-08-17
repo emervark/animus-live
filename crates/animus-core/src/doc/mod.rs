@@ -15,9 +15,9 @@ pub mod undo;
 
 pub use asset::{AssetKind, AssetRef};
 pub use command::{
-    AddLayer, AddPuppet, BoneParam, CommandError, DocChange, DocCommand, LayerScalar,
-    MoveJointRest, PendingChanges, RemovePuppet, RenameLayer, ReorderLayers, ReplacePuppet,
-    SetBoneParam, SetJointPinned, SetLayerScalar,
+    AddLayer, AddPuppet, BoneParam, CommandError, DocChange, DocCommand, ImportImage, ImportTarget,
+    LayerScalar, MoveJointRest, PendingChanges, RemovePuppet, RenameLayer, ReorderLayers,
+    ReplacePuppet, SetBoneParam, SetJointPinned, SetLayerScalar,
 };
 pub use layer::{BlendMode, Layer, Transform2Or3};
 pub use mesh_puppet::{

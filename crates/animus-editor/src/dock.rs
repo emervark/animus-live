@@ -9,6 +9,7 @@ use animus_core::doc::{Project, PuppetKind};
 use animus_runtime::DocumentRes;
 use bevy_egui::egui;
 
+use crate::import::ImportStatus;
 use crate::state::{EditMode, EditorState, Selection, TabKind, Tool};
 use crate::theme;
 use crate::viewport::{ViewportInput, ViewportTarget, viewport_widget};
@@ -54,6 +55,7 @@ pub struct TabViewer<'a> {
     pub doc: &'a Project,
     pub viewport_texture: Option<egui::TextureId>,
     pub target: Option<&'a ViewportTarget>,
+    pub import_status: &'a ImportStatus,
     /// Filled in by the viewport tab, read by the caller afterwards. The
     /// panel cannot touch the camera itself: it runs inside egui's closure,
     /// where the ECS is not available.
@@ -172,6 +174,26 @@ impl TabViewer<'_> {
     }
 
     fn assets(&mut self, ui: &mut egui::Ui) {
+        // The import message goes at the top, where the eye already is after
+        // dropping a file — and it stays until the next import rather than
+        // vanishing on a timer, because the sentence usually contains the
+        // instruction for what to do next.
+        if let Some(message) = &self.import_status.message {
+            let colour = if self.import_status.is_error {
+                theme::LIVE_CORAL
+            } else {
+                theme::GO_GREEN
+            };
+            egui::Frame::NONE
+                .fill(theme::WELL)
+                .corner_radius(theme::R_INPUT)
+                .inner_margin(egui::Margin::same(theme::S_SM as i8))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(message).size(11.5).color(colour));
+                });
+            ui.add_space(theme::S_SM);
+        }
+
         if self.doc.assets.is_empty() {
             stub(
                 ui,
@@ -320,6 +342,7 @@ pub fn draw(
     doc: &DocumentRes,
     viewport_texture: Option<egui::TextureId>,
     target: Option<&ViewportTarget>,
+    import_status: &ImportStatus,
 ) -> Option<ViewportInput> {
     // `CentralPanel::show` is deprecated in egui 0.34 in favour of
     // `show_inside`, which needs a `Ui` — and there is no non-deprecated way
@@ -337,6 +360,7 @@ pub fn draw(
                 doc: &doc.0,
                 viewport_texture,
                 target,
+                import_status,
                 viewport_input: None,
             };
             egui_dock::DockArea::new(&mut dock)
