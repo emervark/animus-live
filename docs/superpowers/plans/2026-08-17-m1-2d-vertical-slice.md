@@ -250,6 +250,8 @@ The user-visible spine of M1: image in, puppet out.
 
 ## Task 10: `animus-editor` — dragging, in both modes
 
+> **DONE 2026-08-17** — `drag.rs` is a pure state machine (gesture, mode, document) → effects; `interact.rs` is the single system that applies them. Step 3's test exists and passes: a 30-position live drag leaves the document byte-identical, puts nothing on the undo stack, and clears its target on release. The gesture keeps its grab-time mode — flipping Edit/Live mid-drag cannot turn a live pull into document edits. A lost Release (alt-tab mid-drag) resets rather than wedges.
+
 The moment the tool becomes convincing, and the place the one-way projection rule earns its keep.
 
 - [ ] **Step 1: Edit mode** — dragging a joint emits `MoveJointRest`, merged into one undo entry per drag.

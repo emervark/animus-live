@@ -139,7 +139,10 @@ pub fn apply(
 // ── inverse-pair commands ──────────────────────────────────────────────
 
 /// Move a joint's rest position. The high-frequency editing command.
-#[derive(Debug, Clone)]
+///
+/// `PartialEq` so tool layers can treat proposed commands as values and
+/// assert on them.
+#[derive(Debug, Clone, PartialEq)]
 pub struct MoveJointRest {
     pub puppet: PuppetId,
     pub joint: JointId,

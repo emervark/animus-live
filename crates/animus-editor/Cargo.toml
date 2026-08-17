@@ -22,6 +22,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
+indexmap.workspace = true
 # Writing test PNGs. Not a runtime dependency: decoding lives in
 # animus-core, which is the only place that should touch an image codec.
 image.workspace = true
