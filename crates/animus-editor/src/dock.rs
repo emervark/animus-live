@@ -997,6 +997,61 @@ impl TabViewer<'_> {
         );
     }
 
+    /// Three presets, and what each one costs.
+    ///
+    /// **The cost is on screen, not in a manual.** Iterations and rate are
+    /// the two numbers that decide whether a show runs at all on the machine
+    /// it is running on, and an operator choosing between them at a venue
+    /// half an hour before doors has no way to measure. Naming the trade —
+    /// looser and cheap, or tight and expensive — is what makes the choice
+    /// possible without the measurement.
+    fn solver_quality(&mut self, ui: &mut egui::Ui) {
+        let s = self.doc.solver;
+        // Draft, Show, Max. `hz` is not a document command yet, so the
+        // presets move iterations only and the row says so rather than
+        // pretending the rate changed too.
+        const PRESETS: [(&str, u32, &str); 3] = [
+            ("Draft", 4, "loose and cheap — rigging, not performing"),
+            ("Show", 8, "the default: enough for a stage"),
+            ("Max", 16, "tight and expensive — stiff rigs and close-ups"),
+        ];
+
+        let current = PRESETS
+            .iter()
+            .min_by_key(|(_, it, _)| s.iterations.abs_diff(*it))
+            .map(|(name, ..)| *name);
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::S_XS;
+            for (name, iterations, _) in PRESETS {
+                let on = current == Some(name) && s.iterations == iterations;
+                if crate::widgets::chip(ui, name, on, if on { theme::BRIGHT } else { theme::DIM })
+                    .clicked()
+                {
+                    self.inspector_edits.push(crate::inspect::InspectorEdit {
+                        command: Some(crate::inspect::InspectorCommand::SolverParam(
+                            animus_core::doc::SetSolverParam {
+                                param: animus_core::doc::SolverParam::Iterations,
+                                from: s.iterations as f32,
+                                to: iterations as f32,
+                            },
+                        )),
+                        released: true,
+                    });
+                }
+            }
+        });
+        ui.add_space(theme::S_XS);
+        let detail = PRESETS
+            .iter()
+            .find(|(name, it, _)| current == Some(name) && s.iterations == *it)
+            .map(|(_, it, why)| format!("{it} iterations · {} Hz — {why}", s.hz))
+            .unwrap_or_else(|| {
+                format!("{} iterations · {} Hz — tuned by hand", s.iterations, s.hz)
+            });
+        crate::widgets::note(ui, &detail);
+    }
+
     /// Where the show goes, and how big it is.
     pub fn output_body(&mut self, ui: &mut egui::Ui) {
         label(ui, "window");
@@ -1592,13 +1647,16 @@ impl TabViewer<'_> {
                 });
             }
         }
-        ui.label(
-            egui::RichText::new(
-                "Gravity pulls every unpinned joint. Damping is how fast motion dies;                  fewer iterations is a looser, more rubbery puppet.",
-            )
-            .size(theme::FS_SM)
-            .color(theme::FAINT),
+        crate::widgets::note(
+            ui,
+            "Gravity pulls every unpinned joint. Damping is how fast motion dies; \
+             fewer iterations is a looser, more rubbery puppet.",
         );
+
+        crate::widgets::divider(ui);
+        crate::widgets::section_label(ui, "solver quality");
+        ui.add_space(theme::S_SM);
+        self.solver_quality(ui);
 
         ui.add_space(theme::S_MD);
         label(ui, "output");
