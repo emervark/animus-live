@@ -18,6 +18,20 @@ pub struct Layer {
     /// glTF models in the same scene — see spec §7.4.
     pub depth: f32,
     pub transform: Transform2Or3,
+    /// Locked layers ignore the pointer: they cannot be selected, dragged or
+    /// resized on the stage.
+    ///
+    /// **Distinct from hidden, and needed alongside it.** A backdrop has to
+    /// stay on screen while the operator works over the top of it, and
+    /// hiding it to stop grabbing it by accident means working blind. The
+    /// two flags answer different questions — "can the audience see it" and
+    /// "can I move it".
+    ///
+    /// Defaulted for serde: every project written before this field existed
+    /// is a project where nothing was locked, and refusing to load one
+    /// because a boolean is missing would be a poor trade.
+    #[serde(default)]
+    pub locked: bool,
     pub contents: Vec<PuppetId>,
 }
 
@@ -33,6 +47,7 @@ impl Layer {
             blend: BlendMode::Normal,
             depth: 0.0,
             transform: Transform2Or3::default(),
+            locked: false,
             contents: Vec::new(),
         }
     }

@@ -1216,6 +1216,49 @@ pub struct SetLayerVisible {
     pub to: bool,
 }
 
+/// Lock a layer against the pointer, or unlock it.
+///
+/// Undoable like every other layer property, and for a reason that is not
+/// obvious: an operator who locks the wrong layer mid-show wants it back in
+/// one keystroke, not a hunt through a list for which one they just changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetLayerLocked {
+    pub layer: LayerId,
+    pub from: bool,
+    pub to: bool,
+}
+
+impl SetLayerLocked {
+    fn write(&self, p: &mut super::Project, v: bool) -> Result<PendingChanges, CommandError> {
+        let l = p
+            .layer_data
+            .get_mut(&self.layer)
+            .ok_or(CommandError::NoSuchLayer(self.layer))?;
+        l.locked = v;
+        Ok(PendingChanges::one(DocChange::LayerPropsChanged(
+            self.layer,
+        )))
+    }
+}
+
+impl DocCommand for SetLayerLocked {
+    fn label(&self) -> &str {
+        "Lock layer"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.to)
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.from)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 impl SetLayerVisible {
     fn write(&self, p: &mut super::Project, v: bool) -> Result<PendingChanges, CommandError> {
         let l = p

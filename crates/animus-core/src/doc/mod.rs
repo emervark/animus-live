@@ -18,8 +18,8 @@ pub use command::{
     AddLayer, AddPuppet, BoneParam, CommandError, DocChange, DocCommand, DuplicateLayer,
     ImportImage, ImportTarget, LayerPlacement, LayerScalar, MIN_LAYER_SCALE, MoveJointRest,
     PendingChanges, RemoveLayer, RemovePuppet, RenameLayer, ReorderLayers, ReplacePuppet,
-    RotateJoint, SetBoneParam, SetJointMass, SetJointPinned, SetLayerScalar, SetLayerVisible,
-    SetSkeleton, SetSolverParam, SetStageCanvas, SolverParam, TransformLayer,
+    RotateJoint, SetBoneParam, SetJointMass, SetJointPinned, SetLayerLocked, SetLayerScalar,
+    SetLayerVisible, SetSkeleton, SetSolverParam, SetStageCanvas, SolverParam, TransformLayer,
 };
 pub use layer::{BlendMode, Layer, Transform2Or3};
 pub use mesh_puppet::{

@@ -29,6 +29,20 @@ pub fn layer_visible(project: &Project, layer: LayerId) -> bool {
     project.layer_data.get(&layer).is_some_and(|l| l.visible)
 }
 
+/// Is this layer holding still against the pointer?
+pub fn layer_locked(project: &Project, layer: LayerId) -> bool {
+    project.layer_data.get(&layer).is_some_and(|l| l.locked)
+}
+
+/// May this puppet be grabbed on the stage?
+///
+/// Selection alone is not enough to grant a drag: a puppet stays selected
+/// while its layer is locked — the inspector should keep describing it — but
+/// the resize handles must stop working, or locking would only half apply.
+pub fn puppet_grabbable(project: &Project, puppet: PuppetId) -> bool {
+    layer_of(project, puppet).is_none_or(|l| layer_visible(project, l) && !layer_locked(project, l))
+}
+
 /// Is this puppet on the stage?
 ///
 /// One predicate, used by everything that draws or clicks. Hiding a layer has
@@ -226,7 +240,12 @@ pub fn puppet_at(project: &Project, ppu: f32, world: Vec2) -> Option<(PuppetId, 
         };
         // A hidden layer is not clickable either. It is not on the stage, so
         // it is not under the cursor.
-        if !layer.visible {
+        //
+        // A locked one is on the stage and still not clickable, which is the
+        // whole point of the flag: a backdrop the operator can see, work over
+        // and never grab by accident. Both skip here rather than at the call
+        // sites, so every gesture agrees about what is reachable.
+        if !layer.visible || layer.locked {
             continue;
         }
         for puppet_id in layer.contents.iter().rev() {
@@ -283,6 +302,41 @@ fn cross(u: Vec2, v: Vec2) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Locked is not hidden, and both must stop a grab.** A backdrop has
+    /// to stay on screen while the operator works over the top of it; if
+    /// locking only dimmed the row in the list, the first careless drag
+    /// would move the set.
+    #[test]
+    fn a_locked_layer_is_on_the_stage_and_out_of_reach() {
+        use animus_core::doc::{Layer, Project};
+
+        let mut p = Project::new("Lock");
+        let id = LayerId(1);
+        let mut layer = Layer::new(id, "Backdrop");
+        layer.locked = true;
+        p.layer_data.insert(id, layer);
+        p.layers.push(id);
+
+        assert!(
+            layer_visible(&p, id),
+            "a locked layer is still drawn: that is the point of it"
+        );
+        assert!(layer_locked(&p, id));
+    }
+
+    #[test]
+    fn an_unlocked_layer_reports_neither() {
+        use animus_core::doc::{Layer, Project};
+
+        let mut p = Project::new("Lock");
+        let id = LayerId(2);
+        p.layer_data.insert(id, Layer::new(id, "Character"));
+        p.layers.push(id);
+
+        assert!(layer_visible(&p, id));
+        assert!(!layer_locked(&p, id));
+    }
 
     /// A square made of two triangles, 0..10.
     fn square() -> (Vec<Vec2>, Vec<u32>) {

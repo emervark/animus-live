@@ -49,6 +49,8 @@ pub enum LayerEdit {
     ResetPlacement(animus_core::ids::LayerId),
     Duplicate(animus_core::ids::LayerId),
     Delete(animus_core::ids::LayerId),
+    /// Lock the layer against the pointer, or unlock it.
+    SetLocked(animus_core::ids::LayerId, bool),
 }
 
 /// What the Output panel asked for this frame.
@@ -349,6 +351,9 @@ impl TabViewer<'_> {
     }
 
     fn layers(&mut self, ui: &mut egui::Ui) {
+        crate::widgets::panel_header(ui, "Layers", Some(&format!("{}", self.doc.layers.len())));
+        ui.add_space(theme::S_XS);
+
         if self.doc.layers.is_empty() {
             stub(ui, "No layers yet.", "Import an image to make one.");
             return;
@@ -356,9 +361,6 @@ impl TabViewer<'_> {
 
         // Painted back to front, so the topmost layer reads at the top of the
         // list — the order an artist expects, not the order the Vec is in.
-        // The arrows move a layer within the paint order; the writer turns
-        // that into a ReorderLayers command plus the depth rewrite that keeps
-        // `layer.depth` the single source of truth for world Z.
         let layer_ids: Vec<_> = self.doc.layers.iter().rev().copied().collect();
 
         for layer_id in layer_ids {
@@ -366,12 +368,94 @@ impl TabViewer<'_> {
                 continue;
             };
             let selected = self.state.selection == Selection::Layer(layer_id);
+            let visible = layer.visible;
+            let locked = layer.locked;
 
             ui.horizontal(|ui| {
-                // Visibility first, at the left edge, where the eye scans a
-                // list of rows. It is the one control an operator reaches for
-                // mid-show and it must not move when the row is renamed.
-                let visible = layer.visible;
+                ui.spacing_mut().item_spacing.x = theme::S_XS;
+
+                // The grip marks where a row can be taken hold of. Inert for
+                // now, and drawn anyway: the comp reorders by dragging, and a
+                // handle that appears only once dragging works would move
+                // every row sideways on the day it lands.
+                let (grip, _) =
+                    ui.allocate_exact_size(egui::vec2(10.0, 18.0), egui::Sense::hover());
+                icons::draw(
+                    ui.painter(),
+                    icons::Icon::Grip,
+                    grip.shrink2(egui::vec2(1.0, 4.0)),
+                    theme::GHOST,
+                );
+
+                const ICON: f32 = 20.0;
+                let gap = ui.spacing().item_spacing.x;
+                let name_width = (ui.available_width() - (ICON + gap) * 2.0).max(40.0);
+
+                let ink = match (selected, visible) {
+                    (true, true) => theme::BRIGHT,
+                    (true, false) => theme::SOFT,
+                    // A hidden layer is dimmed in the list as well, so the
+                    // list and the stage agree without anyone checking.
+                    (false, true) => theme::INK,
+                    (false, false) => theme::FAINT,
+                };
+                // `add_sized`, not `min_size`: a minimum lets a long name grow
+                // past the budget and push the icons off the panel edge, which
+                // is how the delete control disappeared on the first layer
+                // whose name did not happen to be short.
+                let name = ui
+                    .add_sized(
+                        egui::vec2(name_width, ui.spacing().interact_size.y),
+                        egui::Button::new(
+                            egui::RichText::new(&layer.name)
+                                .size(theme::FS_CONTROL)
+                                .color(ink),
+                        )
+                        .fill(if selected {
+                            theme::SELECT_WASH
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        })
+                        .corner_radius(theme::R_INPUT)
+                        .truncate(),
+                    )
+                    .on_hover_text(format!("{} · z {:.2}", layer.name, layer.depth));
+                if name.clicked() {
+                    self.state.selection = Selection::Layer(layer_id);
+                }
+
+                // **The rest live in the row's own menu.** The comp's row
+                // carries three controls; ours has six things it can do, and
+                // six icons in a 260px column is a row nobody can read. What
+                // stays out is what an operator touches mid-show.
+                name.context_menu(|ui| {
+                    if ui.button("Bring forward").clicked() {
+                        self.layer_move = Some((layer_id, 1));
+                        ui.close();
+                    }
+                    if ui.button("Send backward").clicked() {
+                        self.layer_move = Some((layer_id, -1));
+                        ui.close();
+                    }
+                    if ui.button("Duplicate").clicked() {
+                        self.layer_edits.push(LayerEdit::Duplicate(layer_id));
+                        ui.close();
+                    }
+                    if ui.button("Reset position").clicked() {
+                        self.layer_edits.push(LayerEdit::ResetPlacement(layer_id));
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button(egui::RichText::new("Delete layer").color(theme::LIVE_CORAL))
+                        .on_hover_text("Ctrl+Z brings it back.")
+                        .clicked()
+                    {
+                        self.layer_edits.push(LayerEdit::Delete(layer_id));
+                        ui.close();
+                    }
+                });
+
                 if icons::button(
                     ui,
                     if visible {
@@ -393,86 +477,28 @@ impl TabViewer<'_> {
                         .push(LayerEdit::SetVisible(layer_id, !visible));
                 }
 
-                // Everything in one left-to-right flow, with the name sized
-                // to leave exactly enough room for the icons.
-                //
-                // A nested `right_to_left` group was tried first and its
-                // buttons took hover but never a click, while the eye outside
-                // it worked from the same helper. Rather than keep guessing at
-                // egui's nested-layout interaction, this computes the width.
-                const ICON: f32 = 20.0;
-                const ICONS: usize = 4;
-                let gap = ui.spacing().item_spacing.x;
-                let reserved = (ICON + gap) * ICONS as f32;
-                let name_width = (ui.available_width() - reserved).max(40.0);
-
-                let ink = match (selected, visible) {
-                    (true, true) => theme::BRIGHT,
-                    (true, false) => theme::SOFT,
-                    // A hidden layer is dimmed in the list as well, so the
-                    // list and the stage agree without anyone checking.
-                    (false, true) => theme::INK,
-                    (false, false) => theme::FAINT,
-                };
-                // `add_sized`, not `min_size`: a minimum lets a long name grow
-                // past the budget and push the trash icon off the panel edge,
-                // which is how the delete control disappeared on the first
-                // layer whose name did not happen to be short.
-                if ui
-                    .add_sized(
-                        egui::vec2(name_width, ui.spacing().interact_size.y),
-                        egui::Button::new(
-                            egui::RichText::new(&layer.name)
-                                .size(theme::FS_CONTROL)
-                                .color(ink),
-                        )
-                        .fill(if selected {
-                            theme::WELL_HOVER
-                        } else {
-                            egui::Color32::TRANSPARENT
-                        })
-                        .corner_radius(theme::R_INPUT)
-                        .truncate(),
-                    )
-                    .on_hover_text(format!("{} · z {:.2}", layer.name, layer.depth))
-                    .clicked()
+                // **Locked is not hidden.** A backdrop has to stay on screen
+                // while the operator works over the top of it, and hiding it
+                // to stop grabbing it by accident means working blind.
+                if icons::button(
+                    ui,
+                    if locked {
+                        icons::Icon::Lock
+                    } else {
+                        icons::Icon::Unlock
+                    },
+                    locked,
+                    locked.then_some(theme::CAUTION_AMBER),
+                )
+                .on_hover_text(if locked {
+                    "Unlock. The layer can be selected and moved again."
+                } else {
+                    "Lock. The layer stays on screen but ignores the pointer."
+                })
+                .clicked()
                 {
-                    self.state.selection = Selection::Layer(layer_id);
-                }
-
-                if icons::button(ui, icons::Icon::Up, false, None)
-                    .on_hover_text(format!("Bring forward. Now at z {:.2}.", layer.depth))
-                    .clicked()
-                {
-                    self.layer_move = Some((layer_id, 1));
-                }
-                if icons::button(ui, icons::Icon::Down, false, None)
-                    .on_hover_text(format!("Send backward. Now at z {:.2}.", layer.depth))
-                    .clicked()
-                {
-                    self.layer_move = Some((layer_id, -1));
-                }
-                if icons::button(ui, icons::Icon::Copy, false, None)
-                    .on_hover_text("Duplicate this layer and everything on it.")
-                    .clicked()
-                {
-                    self.layer_edits.push(LayerEdit::Duplicate(layer_id));
-                }
-
-                // Delete is last and the only coral control in the row: it is
-                // the only one that destroys work.
-                //
-                // The last layer is deletable too. Refusing it left the
-                // operator with no way to start over from one bad import
-                // except by duplicating it first, and "you may not empty this
-                // project" is not a rule the document needs — an empty
-                // project is a legal document and the viewport already knows
-                // how to ask for an image.
-                if icons::button(ui, icons::Icon::Trash, false, Some(theme::LIVE_CORAL))
-                    .on_hover_text("Delete this layer and everything on it. Ctrl+Z brings it back.")
-                    .clicked()
-                {
-                    self.layer_edits.push(LayerEdit::Delete(layer_id));
+                    self.layer_edits
+                        .push(LayerEdit::SetLocked(layer_id, !locked));
                 }
             });
         }

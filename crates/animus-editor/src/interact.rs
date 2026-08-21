@@ -340,6 +340,13 @@ pub fn apply_interactions(
                         _ => None,
                     };
                     let handle = selected.and_then(|p| {
+                        // A locked layer keeps its selection and loses its
+                        // handles. Without this the corner path would resize
+                        // it anyway, because it never goes through
+                        // `puppet_at` — it works from the selection.
+                        if !crate::hit::puppet_grabbable(&doc.0, p) {
+                            return None;
+                        }
                         let (lo, hi) = crate::hit::selection_box(&doc.0, p, scale.ppu)?;
                         let corner = crate::hit::corner_at(lo, hi, world, handle_radius)?;
                         let layer = crate::hit::layer_of(&doc.0, p)?;
@@ -817,6 +824,16 @@ fn apply_layer_edit(
                 return;
             }
             Box::new(animus_core::doc::TransformLayer { layer, from, to })
+        }
+        LayerEdit::SetLocked(layer, to) => {
+            let Some(current) = doc.0.layer_data.get(&layer) else {
+                return;
+            };
+            Box::new(animus_core::doc::SetLayerLocked {
+                layer,
+                from: current.locked,
+                to,
+            })
         }
         LayerEdit::Duplicate(layer) => Box::new(animus_core::doc::DuplicateLayer::new(layer)),
         LayerEdit::Delete(layer) => {

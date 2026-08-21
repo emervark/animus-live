@@ -161,7 +161,15 @@ An asset's `kind` (used in §4.4) is one of the strings:
 | `blend` | string | One of `"normal"`, `"add"`, `"multiply"`, `"screen"`. |
 | `depth` | number | Authoritative world Z. Used to interleave 2D layers with 3D glTF models sharing the scene. |
 | `transform` | object | See below — a tagged union. |
+| `locked` | boolean | Whether the layer ignores the pointer. Optional, defaults to `false`. |
 | `contents` | array of integer | Puppet IDs this layer displays. |
+
+`locked` is **not** `visible` inverted, and both are needed. `visible`
+answers "does the audience see it"; `locked` answers "can the operator
+grab it". A backdrop is normally visible and locked: on screen, worked
+over, and never picked up by accident. A reader that predates the field
+treats a file without it as unlocked, which is what every such file
+meant.
 
 `transform` is one of two shapes, **externally tagged**: the object has
 exactly one key, `"flat"` or `"spatial"`, whose value holds the fields

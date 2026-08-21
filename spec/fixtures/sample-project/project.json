@@ -43,6 +43,7 @@
           ]
         }
       },
+      "locked": false,
       "contents": []
     },
     "7": {
@@ -72,6 +73,7 @@
           ]
         }
       },
+      "locked": false,
       "contents": [
         5
       ]
