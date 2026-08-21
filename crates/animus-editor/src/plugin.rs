@@ -25,6 +25,25 @@ pub enum EditorSet {
     Commands,
 }
 
+/// The two output resources, as one parameter.
+///
+/// Bevy caps a system at sixteen parameters and `ui_system` is the one place
+/// in this editor that legitimately needs to see nearly everything. Grouping
+/// by subject rather than raising the cap keeps the signature readable: what
+/// the projector is doing is one thing to know, not two.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct OutputView<'w> {
+    pub state: Option<Res<'w, animus_output::OutputState>>,
+    pub config: Option<Res<'w, animus_output::OutputConfig>>,
+}
+
+/// The live bus and what its sources managed to open, as one parameter.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct SignalView<'w> {
+    pub bus: Option<Res<'w, animus_runtime::SignalBusRes>>,
+    pub status: Option<Res<'w, animus_runtime::SignalStatus>>,
+}
+
 pub struct EditorPlugin;
 
 impl Plugin for EditorPlugin {
@@ -53,7 +72,12 @@ impl Plugin for EditorPlugin {
             .add_systems(Startup, import::load_existing_textures)
             .add_systems(Update, import::handle_dropped_files)
             .add_systems(Update, interact::apply_interactions)
-            .add_systems(Update, interact::apply_dock_output)
+            // Before the dock output is consumed: `apply_dock_output`
+            // takes it, and a system that ran after would find nothing.
+            .add_systems(
+                Update,
+                (interact::apply_signal_edits, interact::apply_dock_output).chain(),
+            )
             .add_systems(Update, interact::keyboard_shortcuts)
             .add_systems(Update, crate::mode::settle_on_mode_change)
             .add_systems(Update, crate::mode::track_selection_live)
@@ -131,9 +155,9 @@ fn ui_system(
     mut frame_input: ResMut<FrameViewportInput>,
     mut dock_out: ResMut<FrameDockOutput>,
     mut egui_focus: ResMut<EguiWantsKeyboard>,
-    output_state: Option<Res<animus_output::OutputState>>,
-    output_config: Option<Res<animus_output::OutputConfig>>,
+    output: OutputView,
     seq: Res<animus_runtime::Sequencer>,
+    signal: SignalView,
     file_status: Res<files::FileStatus>,
     mut file_request: ResMut<files::FileRequest>,
     mut installed: Local<bool>,
@@ -146,9 +170,10 @@ fn ui_system(
         *installed = true;
     }
 
-    let output_info = output_state
+    let output_info = output
+        .state
         .as_ref()
-        .zip(output_config.as_ref())
+        .zip(output.config.as_ref())
         .map(|(st, cfg)| dock::OutputInfo {
             vsync: cfg.vsync,
             fullscreen: cfg.fullscreen.unwrap_or(st.is_fullscreen),
@@ -165,6 +190,8 @@ fn ui_system(
         &status,
         output_info,
         &seq,
+        signal.bus.as_deref(),
+        signal.status.as_deref(),
         file_status.message.as_deref(),
     );
     if let Some(action) = out.file_request.take() {

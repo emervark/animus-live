@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+animus-signal = { path = "../animus-signal" }
 animus-core.workspace = true
 bevy.workspace = true
 glam.workspace = true

@@ -253,6 +253,7 @@ pub fn title_bar(
     output: Option<&OutputInfo>,
     clips_playing: usize,
     recording: bool,
+    signal: Option<&animus_runtime::SignalStatus>,
     file_status: Option<&str>,
     file_request: &mut Option<crate::files::FileAction>,
     wants_undo: &mut bool,
@@ -365,6 +366,25 @@ pub fn title_bar(
                 // will not move is otherwise indistinguishable from one that
                 // is broken.
                 chip(ui, "SOLVER PAUSED", theme::CAUTION_AMBER, true);
+            }
+
+            // **Port chips report the ports, not the intention.** A green
+            // MIDI chip on a machine with nothing plugged in would be the
+            // most misleading thing in the chrome: an operator would go
+            // hunting for a mapping problem that is really a cable problem.
+            if let Some(signal) = signal {
+                for (label, live, detail) in [
+                    ("OSC", signal.osc_live(), signal.osc_summary()),
+                    ("MIDI", signal.midi_live(), signal.midi_summary()),
+                ] {
+                    chip(
+                        ui,
+                        label,
+                        if live { theme::DATA_CYAN } else { theme::DIM },
+                        live,
+                    )
+                    .on_hover_text(detail);
+                }
             }
 
             // The chip is also the way in to the output settings: it already

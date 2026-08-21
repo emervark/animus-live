@@ -1,0 +1,16 @@
+[package]
+name = "animus-signal"
+description = "Live input for Animus Live: MIDI and OSC sources, channels and bindings. No engine dependency."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+animus-core = { path = "../animus-core" }
+glam.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+midir.workspace = true
+rosc.workspace = true

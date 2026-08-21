@@ -1120,3 +1120,60 @@ fn turnable(doc: &DocumentRes, puppet: PuppetId, joint: animus_core::ids::JointI
         _ => false,
     }
 }
+
+/// Apply what CHANNELS and BIND asked for.
+///
+/// A system of its own rather than a branch inside `apply_dock_output`,
+/// because the bus is written by a thread and read by a panel: keeping its
+/// one writer separate is what makes "who can change this" answerable.
+pub fn apply_signal_edits(
+    mut out: ResMut<FrameDockOutput>,
+    state: Res<EditorState>,
+    signal: Option<ResMut<animus_runtime::SignalBusRes>>,
+) {
+    let Some(dock) = out.0.as_mut() else { return };
+    let edits = std::mem::take(&mut dock.signal_edits);
+    if edits.is_empty() {
+        return;
+    }
+    let Some(mut signal) = signal else { return };
+
+    for edit in edits {
+        match edit {
+            crate::dock::SignalEdit::ToggleChannel(id) => {
+                if let Some(c) = signal.bus.channels.iter_mut().find(|c| c.id == id) {
+                    c.on = !c.on;
+                }
+            }
+            crate::dock::SignalEdit::ToggleBinding(i) => {
+                if let Some(b) = signal.bus.bindings.get_mut(i) {
+                    b.on = !b.on;
+                }
+            }
+            crate::dock::SignalEdit::Remove(i) => {
+                if i < signal.bus.bindings.len() {
+                    signal.bus.bindings.remove(i);
+                }
+            }
+            crate::dock::SignalEdit::Learn(x_axis) => {
+                if let Selection::Joint(puppet, joint) = state.selection {
+                    signal.bus.learn = Some(if x_axis {
+                        animus_signal::Target::JointX(puppet, joint)
+                    } else {
+                        animus_signal::Target::JointY(puppet, joint)
+                    });
+                }
+            }
+            crate::dock::SignalEdit::CancelLearn => signal.bus.learn = None,
+            crate::dock::SignalEdit::SetRange(i, span) => {
+                if let Some(b) = signal.bus.bindings.get_mut(i) {
+                    // Symmetric about rest: a control at its middle should
+                    // leave the limb where the rig says it lives, or every
+                    // binding would also be a permanent offset.
+                    b.high = span;
+                    b.low = -span;
+                }
+            }
+        }
+    }
+}

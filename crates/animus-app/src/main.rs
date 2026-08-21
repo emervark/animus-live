@@ -9,7 +9,7 @@ mod cli;
 
 use animus_editor::{EditorPlugin, ProjectRoot};
 use animus_output::{OutputConfig, OutputPlugin};
-use animus_runtime::{RuntimePlugin, SequencerPlugin, SolverPlugin};
+use animus_runtime::{RuntimePlugin, SequencerPlugin, SignalPlugin, SolverPlugin};
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 
@@ -79,6 +79,7 @@ fn main() {
     .add_plugins(RuntimePlugin::new(project))
     .add_plugins(SolverPlugin)
     .add_plugins(SequencerPlugin)
+    .add_plugins(SignalPlugin)
     .add_plugins(EditorPlugin)
     .add_plugins(OutputPlugin)
     .insert_resource(ProjectRoot(root))

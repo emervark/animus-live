@@ -66,6 +66,24 @@ pub enum LayerEdit {
     SetLocked(animus_core::ids::LayerId, bool),
 }
 
+/// What the CHANNELS and BIND panels asked for this frame.
+///
+/// Intents, like every other panel output: the panel names the act and one
+/// writer performs it. The bus is live data arriving off a thread, and a
+/// panel reaching into it mid-frame would be reading and writing the same
+/// thing at once.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SignalEdit {
+    ToggleChannel(animus_signal::ChannelId),
+    ToggleBinding(usize),
+    Remove(usize),
+    /// Arm Learn against the selected joint. `true` is the X axis.
+    Learn(bool),
+    CancelLearn,
+    /// Widen or narrow how far a binding moves its joint, in image pixels.
+    SetRange(usize, f32),
+}
+
 /// What the Output panel asked for this frame.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct OutputEdits {
@@ -112,6 +130,8 @@ pub struct DockOutput {
     pub wants_fit: bool,
     /// What the clip panel asked for this frame.
     pub step_actions: Vec<StepAction>,
+    /// What the CHANNELS and BIND panels asked for.
+    pub signal_edits: Vec<SignalEdit>,
     pub wants_undo: bool,
     pub wants_redo: bool,
     /// Open, Save or Save As, if the operator asked for one.
@@ -184,8 +204,14 @@ pub struct TabViewer<'a> {
     /// (vsync on, human description) of the output window, if the plugin is
     /// installed.
     pub output: Option<OutputInfo>,
+    /// The live bus, if it is running. Read-only here.
+    pub signal: Option<&'a animus_runtime::SignalBusRes>,
+    /// What its sources managed to open.
+    pub signal_status: Option<&'a animus_runtime::SignalStatus>,
     /// Filled by the Inspector tab; the writer system applies them.
     pub inspector_edits: Vec<InspectorEdit>,
+    /// Filled by CHANNELS and BIND.
+    pub signal_edits: Vec<SignalEdit>,
     pub wants_undo: bool,
     pub wants_redo: bool,
     /// Layer the operator asked to move, and the direction (+1 toward the
@@ -691,6 +717,284 @@ impl TabViewer<'_> {
                 }
             });
         }
+    }
+
+    /// CHANNELS: what is arriving from outside, right now.
+    ///
+    /// **Nothing here is a list of what a controller might send.** A row
+    /// appears the first time a value lands on it, named after where it came
+    /// from — which is how an operator finds the knob they want: by turning
+    /// it, not by reading a manual.
+    fn channels(&mut self, ui: &mut egui::Ui) {
+        let Some(signal) = self.signal else {
+            stub(
+                ui,
+                "The signal bus is not running.",
+                "MIDI and OSC open when the editor starts.",
+            );
+            return;
+        };
+        let status = self.signal_status;
+
+        crate::widgets::panel_header(
+            ui,
+            "Live inputs",
+            Some(&format!("{}", signal.bus.channels.len())),
+        );
+        ui.add_space(theme::S_XS);
+
+        // What opened, said plainly. A port that failed is the single most
+        // useful thing this panel can tell someone whose controller is not
+        // working, and it is exactly what a decorative panel would hide.
+        if let Some(status) = status {
+            for (name, live, detail) in [
+                ("MIDI", status.midi_live(), status.midi_summary()),
+                ("OSC", status.osc_live(), status.osc_summary()),
+            ] {
+                ui.horizontal(|ui| {
+                    crate::widgets::chip(
+                        ui,
+                        name,
+                        live,
+                        if live { theme::DATA_CYAN } else { theme::DIM },
+                    );
+                    ui.label(
+                        egui::RichText::new(detail)
+                            .size(theme::FS_SM)
+                            .color(if live { theme::DIM } else { theme::HINT }),
+                    );
+                });
+            }
+        }
+
+        ui.add_space(theme::S_SM);
+        if signal.bus.channels.is_empty() {
+            crate::widgets::note(
+                ui,
+                "Nothing has arrived yet. Move a knob, a fader or a phone \
+                 and it will appear here.",
+            );
+            return;
+        }
+
+        crate::widgets::note(
+            ui,
+            "A connected source does not move the puppet until it is bound.",
+        );
+        ui.add_space(theme::S_SM);
+
+        for channel in &signal.bus.channels {
+            let bound = signal.bus.bindings.iter().any(|b| b.src == channel.id);
+            ui.horizontal(|ui| {
+                let on = channel.on;
+                if crate::widgets::chip(
+                    ui,
+                    if on { "ON" } else { "OFF" },
+                    on,
+                    if on { theme::GO_GREEN } else { theme::FAINT },
+                )
+                .on_hover_text(if on {
+                    "Silence this channel. It keeps arriving; it stops driving."
+                } else {
+                    "Let this channel drive again."
+                })
+                .clicked()
+                {
+                    self.signal_edits
+                        .push(SignalEdit::ToggleChannel(channel.id));
+                }
+                ui.label(
+                    egui::RichText::new(channel.source.label())
+                        .monospace()
+                        .size(theme::FS_SM)
+                        .color(if on { theme::INK } else { theme::FAINT }),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{:.2}", channel.value))
+                            .monospace()
+                            .size(theme::FS_TINY)
+                            .color(theme::MID),
+                    );
+                    if bound {
+                        ui.label(
+                            egui::RichText::new("bound")
+                                .monospace()
+                                .size(theme::FS_MICRO)
+                                .color(theme::GO_GREEN),
+                        );
+                    }
+                });
+            });
+            crate::widgets::meter(
+                ui,
+                channel.value,
+                if channel.on {
+                    theme::DATA_CYAN
+                } else {
+                    theme::GHOST
+                },
+            );
+            ui.add_space(theme::S_2XS);
+        }
+    }
+
+    /// BIND: which channel drives what, and how far.
+    fn bindings(&mut self, ui: &mut egui::Ui) {
+        let Some(signal) = self.signal else {
+            stub(
+                ui,
+                "The signal bus is not running.",
+                "MIDI and OSC open when the editor starts.",
+            );
+            return;
+        };
+
+        crate::widgets::panel_header(
+            ui,
+            "Bindings",
+            Some(&format!("{}", signal.bus.bindings.len())),
+        );
+        ui.add_space(theme::S_XS);
+
+        // Learn is armed against the selected joint, so the panel says which
+        // one rather than leaving the operator to guess what they are about
+        // to wire a knob to.
+        match self.state.selection {
+            Selection::Joint(_, joint) => {
+                let learning = signal.bus.learn.is_some();
+                ui.horizontal(|ui| {
+                    for (label, axis) in [("Learn X", true), ("Learn Y", false)] {
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(label).size(theme::FS_SM).color(
+                                        if learning {
+                                            theme::CAUTION_AMBER
+                                        } else {
+                                            theme::INK
+                                        },
+                                    ),
+                                )
+                                .fill(if learning {
+                                    theme::WARN_WASH
+                                } else {
+                                    theme::WELL
+                                })
+                                .corner_radius(theme::R_BADGE),
+                            )
+                            .on_hover_text(
+                                "Arm, then move the control you want. The next thing \
+                                 that moves takes this target.",
+                            )
+                            .clicked()
+                        {
+                            self.signal_edits.push(SignalEdit::Learn(axis));
+                        }
+                    }
+                    if learning
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("Cancel")
+                                        .size(theme::FS_SM)
+                                        .color(theme::SUB),
+                                )
+                                .fill(theme::WELL)
+                                .corner_radius(theme::R_BADGE),
+                            )
+                            .clicked()
+                    {
+                        self.signal_edits.push(SignalEdit::CancelLearn);
+                    }
+                });
+                crate::widgets::note(
+                    ui,
+                    &if signal.bus.learn.is_some() {
+                        format!(
+                            "Waiting for a control to move — it will drive joint {}.",
+                            joint.0
+                        )
+                    } else {
+                        format!("Arming will wire a control to joint {}.", joint.0)
+                    },
+                );
+            }
+            _ => crate::widgets::note(ui, "Select a joint to bind a control to it."),
+        }
+
+        ui.add_space(theme::S_SM);
+        if signal.bus.bindings.is_empty() {
+            crate::widgets::note(ui, "Nothing is bound yet.");
+            return;
+        }
+
+        for (index, binding) in signal.bus.bindings.iter().enumerate() {
+            let source = signal
+                .bus
+                .channel(binding.src)
+                .map(|c| c.source.label())
+                .unwrap_or_else(|| "gone".into());
+            let (_, joint) = binding.dst.joint();
+
+            ui.horizontal(|ui| {
+                let on = binding.on;
+                if crate::widgets::chip(
+                    ui,
+                    if on { "ON" } else { "OFF" },
+                    on,
+                    if on { theme::GO_GREEN } else { theme::FAINT },
+                )
+                .clicked()
+                {
+                    self.signal_edits.push(SignalEdit::ToggleBinding(index));
+                }
+                ui.label(
+                    egui::RichText::new(source)
+                        .monospace()
+                        .size(theme::FS_TINY)
+                        .color(theme::MID),
+                );
+                // Drawn, not typed: U+2192 is missing from egui built-in
+                // faces and renders as a hollow box, which reads as a broken
+                // row rather than as "this drives that".
+                let (arrow, _) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 12.0), egui::Sense::hover());
+                icons::draw(ui.painter(), icons::Icon::ArrowRight, arrow, theme::FAINT);
+                ui.label(
+                    egui::RichText::new(format!("joint {} {}", joint.0, binding.dst.axis()))
+                        .monospace()
+                        .size(theme::FS_TINY)
+                        .color(theme::INK),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icons::button(ui, icons::Icon::Trash, false, Some(theme::LIVE_CORAL))
+                        .on_hover_text("Remove this binding.")
+                        .clicked()
+                    {
+                        self.signal_edits.push(SignalEdit::Remove(index));
+                    }
+                });
+            });
+
+            let mut span = binding.high;
+            let response = crate::widgets::SliderRow::new("Range", &mut span, 4.0..=400.0)
+                .suffix(" px")
+                .decimals(0)
+                .default_value(animus_signal::DEFAULT_RANGE_PX)
+                .show(ui);
+            if response.changed() {
+                self.signal_edits.push(SignalEdit::SetRange(index, span));
+            }
+            ui.add_space(theme::S_2XS);
+        }
+
+        ui.add_space(theme::S_SM);
+        crate::widgets::note(
+            ui,
+            "Your hand always wins: dragging a bound joint overrides its \
+             binding until you let go.",
+        );
     }
 
     /// Where the show goes, and how big it is.
@@ -1848,6 +2152,8 @@ pub fn draw(
     import_status: &ImportStatus,
     output: Option<OutputInfo>,
     seq: &animus_runtime::Sequencer,
+    signal: Option<&animus_runtime::SignalBusRes>,
+    signal_status: Option<&animus_runtime::SignalStatus>,
     file_status: Option<&str>,
 ) -> DockOutput {
     // `CentralPanel::show` is deprecated in egui 0.34 in favour of
@@ -1883,6 +2189,7 @@ pub fn draw(
                 output.as_ref(),
                 seq.tracks.iter().filter(|t| t.hits(seq.len) > 0).count(),
                 seq.armed,
+                signal_status,
                 file_status,
                 &mut out.file_request,
                 &mut out.wants_undo,
@@ -1964,7 +2271,10 @@ pub fn draw(
         target,
         import_status,
         output: output.clone(),
+        signal,
+        signal_status,
         inspector_edits: Vec::new(),
+        signal_edits: Vec::new(),
         layer_move: None,
         layer_edits: Vec::new(),
         set_output_vsync: None,
@@ -2044,16 +2354,8 @@ pub fn draw(
                     match viewer.state.right_tab {
                         RightTab::Inspect => viewer.inspector(ui),
                         RightTab::Physics => viewer.solver(ui),
-                        RightTab::Channels => stub(
-                            ui,
-                            "Live channels appear here once a source is connected.",
-                            "OSC and MIDI are being wired up.",
-                        ),
-                        RightTab::Bind => stub(
-                            ui,
-                            "Bindings map a channel onto a parameter.",
-                            "Use the mark beside any value to start one.",
-                        ),
+                        RightTab::Channels => viewer.channels(ui),
+                        RightTab::Bind => viewer.bindings(ui),
                     }
                 });
         });
@@ -2092,6 +2394,7 @@ pub fn draw(
     viewer.state.panels = sizes;
     out.viewport_input = viewer.viewport_input;
     out.inspector_edits = std::mem::take(&mut viewer.inspector_edits);
+    out.signal_edits = std::mem::take(&mut viewer.signal_edits);
     out.layer_move = viewer.layer_move;
     out.layer_edits = std::mem::take(&mut viewer.layer_edits);
     out.set_output_vsync = viewer.set_output_vsync;

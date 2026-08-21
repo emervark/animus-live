@@ -90,6 +90,8 @@ pub enum Icon {
     Plus,
     /// The application's mark: a joint with a target on it.
     Mark,
+    /// A rightward arrow: this drives that.
+    ArrowRight,
 }
 
 /// Draw `icon` to fill `rect`.
@@ -274,6 +276,10 @@ pub fn draw(painter: &egui::Painter, icon: Icon, rect: egui::Rect, ink: egui::Co
         Icon::Plus => {
             painter.add(line(vec![at(0.5, 0.14), at(0.5, 0.86)]));
             painter.add(line(vec![at(0.14, 0.5), at(0.86, 0.5)]));
+        }
+        Icon::ArrowRight => {
+            painter.add(line(vec![at(0.08, 0.5), at(0.86, 0.5)]));
+            painter.add(line(vec![at(0.62, 0.26), at(0.9, 0.5), at(0.62, 0.74)]));
         }
         Icon::Mark => {
             // A joint with a target on it: what this tool does, in one glyph.

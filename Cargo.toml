@@ -47,6 +47,14 @@ bevy        = "=0.19.1"
 bevy_egui   = "=0.40"
 egui        = "=0.34"
 
+# --- live input ---
+# MIDI in through the platform's own API (winmm on Windows, ALSA on Linux,
+# CoreMIDI on macOS); OSC is plain UDP with a pure-Rust codec, so neither
+# pulls a runtime in. Both run on their own thread: the UI thread must
+# never wait on a controller.
+midir       = "0.10"
+rosc        = "0.11"
+
 # --- project io ---
 sha2        = "0.10"
 tempfile    = "3"
