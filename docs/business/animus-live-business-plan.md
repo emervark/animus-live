@@ -638,29 +638,34 @@ audience, which is the only thing this category actually sells.
 Every number in §7 traces to one of these. They are listed so they can be replaced.
 
 **Market**
+
 - 120,000 people worldwide own paid live-visual software, spending ~€120/yr each.
 - 25,000 theatre/dance visual designers in EU + NA, spending ~€200/yr.
 - 8,000 media-art institutions and education programmes, spending ~€300/yr.
 - 18% of that total is realistically serviceable by a Windows-first, English-language, puppet-focused tool.
 
 **Adoption**
+
 - 6,000 / 22,000 / 55,000 downloads per year.
 - 8% / 10% / 11% of cumulative downloads become monthly active users.
 - 11.5% / 8.4% / 6.0% of active users become paying customers.
 
 **Pricing**
+
 - Studio €199 perpetual with 12 months of updates; €79/yr maintenance thereafter.
 - Showmesh + Animus bundle €349 (assumes Showmesh at roughly €249 standalone — **to be confirmed**).
 - Venue site licence €1,200/yr. Training €900/day. Integration €600/day. Asset packs €29.
 - Maintenance renewal rate averaging 1.6 renewals per licence over its life.
 
 **Costs**
+
 - Founder gross salary €18k / €36k / €54k; Estonian employer cost multiplier 1.338 (33% social tax + 0.8% unemployment insurance).
 - Merchant of record all-in fee 5% of product revenue.
 - 8% contingency on all costs.
 - Contractors €0 / €15,000 / €45,000.
 
 **Funding**
+
 - Year 1 grants of €12,000 landing in Q2 and Q4. Modelled at zero in the break-even test in §7.5.
 
 ---
