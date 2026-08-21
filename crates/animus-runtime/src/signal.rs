@@ -34,7 +34,7 @@ use animus_core::ids::{JointId, PuppetId};
 use animus_signal::{Bus, Target, midi, osc};
 
 use crate::components::{CompiledRigRef, PuppetRoot};
-use crate::solve::{HeldJoint, JointTargets};
+use crate::solve::{HeldJoint, JointTargets, LiveRotations};
 
 /// Everything arriving and everything it is wired to. Plain data.
 #[derive(Resource, Debug, Default)]
@@ -43,6 +43,8 @@ pub struct SignalBusRes {
     /// Which joints a binding wrote last frame, so they can be released when
     /// the binding stops.
     driven: Vec<(PuppetId, JointId)>,
+    /// And which it turned, which are released the same way.
+    turned: Vec<(PuppetId, JointId)>,
 }
 
 /// The live connections. Non-send: a MIDI port belongs to the thread that
@@ -130,7 +132,10 @@ impl Plugin for SignalPlugin {
                 _midi: midi,
                 _osc: osc,
             })
-            .add_systems(Update, (drain_sources, apply_bindings).chain());
+            .add_systems(
+                Update,
+                (drain_sources, tick_generators, apply_bindings).chain(),
+            );
     }
 }
 
@@ -143,11 +148,32 @@ pub fn drain_sources(mut signal: ResMut<SignalBusRes>, sources: NonSend<Sources>
     signal.bus.drain(&sources.osc_rx);
 }
 
+/// Advance the generators: LFOs on the clock, the rest on the transport.
+///
+/// **A transport-locked generator only moves while the transport does.**
+/// That is what "locked" means: stopping the pattern has to stop everything
+/// riding on it, or an operator who pressed stop would still have limbs
+/// drifting on stage.
+pub fn tick_generators(
+    time: Res<Time>,
+    seq: Res<crate::sequencer::Sequencer>,
+    mut signal: ResMut<SignalBusRes>,
+) {
+    let dt = time.delta_secs();
+    let beats = if seq.running {
+        dt * seq.bpm.max(1.0) / 60.0
+    } else {
+        0.0
+    };
+    signal.bus.tick(dt, beats);
+}
+
 /// Turn every live binding into a joint target.
 pub fn apply_bindings(
     mut signal: ResMut<SignalBusRes>,
     held: Res<HeldJoint>,
     mut targets: ResMut<JointTargets>,
+    mut rotations: ResMut<LiveRotations>,
     rigs: Query<(&PuppetRoot, &CompiledRigRef)>,
 ) {
     // Release first: a binding switched off, or a channel silenced, has to
@@ -158,6 +184,9 @@ pub fn apply_bindings(
         if held.0 != Some((puppet, joint)) {
             targets.clear_joint(puppet, joint);
         }
+    }
+    for (puppet, joint) in std::mem::take(&mut signal.turned) {
+        rotations.set(puppet, joint, 0.0);
     }
 
     let offsets = signal.bus.offsets();
@@ -171,9 +200,23 @@ pub fn apply_bindings(
     let mut wanted: Vec<((PuppetId, JointId), Vec2)> = Vec::new();
     for (target, offset) in offsets {
         let key = target.joint();
+        // Rotation is not a position, so it leaves here by a different door
+        // — into `LiveRotations`, where the editor's forward-kinematics
+        // system turns one angle into targets for a whole chain. Adding it
+        // to an offset would have moved the joint sideways by the number of
+        // degrees, which is the sort of thing that looks like a physics bug
+        // for an afternoon.
+        if let Target::JointRotation(puppet, joint) = target {
+            if held.0 != Some((puppet, joint)) {
+                rotations.set(puppet, joint, offset.to_radians());
+                signal.turned.push((puppet, joint));
+            }
+            continue;
+        }
         let delta = match target {
             Target::JointX(..) => Vec2::new(offset, 0.0),
             Target::JointY(..) => Vec2::new(0.0, offset),
+            Target::JointRotation(..) => unreachable!("handled above"),
         };
         match wanted.iter_mut().find(|(k, _)| *k == key) {
             Some((_, sum)) => *sum += delta,

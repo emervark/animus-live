@@ -30,6 +30,10 @@ pub use sequencer::{
     FALLOFF, FULL, GHOST, Quantize, STEP_COUNTS, Sequencer, SequencerPlugin, SequencerSet,
     TRACK_INKS, Track, run_sequencer,
 };
-pub use signal::{SignalBusRes, SignalPlugin, SignalStatus, apply_bindings, drain_sources};
+pub use signal::{
+    SignalBusRes, SignalPlugin, SignalStatus, apply_bindings, drain_sources, tick_generators,
+};
 pub use skinning::{BuildError, SkinnedMeshBuild, build_inverse_bindposes, build_skinned_mesh};
-pub use solve::{HeldJoint, JointTargets, SolveSet, SolverPanic, SolverPlugin, WritebackSet};
+pub use solve::{
+    HeldJoint, JointTargets, LiveRotations, SolveSet, SolverPanic, SolverPlugin, WritebackSet,
+};

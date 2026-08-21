@@ -66,6 +66,14 @@ pub enum LayerEdit {
     SetLocked(animus_core::ids::LayerId, bool),
 }
 
+/// Which of a joint's three parameters a Learn is arming against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LearnAxis {
+    X,
+    Y,
+    Rotation,
+}
+
 /// What the CHANNELS and BIND panels asked for this frame.
 ///
 /// Intents, like every other panel output: the panel names the act and one
@@ -77,11 +85,21 @@ pub enum SignalEdit {
     ToggleChannel(animus_signal::ChannelId),
     ToggleBinding(usize),
     Remove(usize),
-    /// Arm Learn against the selected joint. `true` is the X axis.
-    Learn(bool),
+    /// Arm Learn against the selected joint, on this axis.
+    Learn(LearnAxis),
+    /// Finish an armed Learn by naming the source rather than moving it.
+    BindArmedTo(animus_signal::ChannelId),
     CancelLearn,
-    /// Widen or narrow how far a binding moves its joint, in image pixels.
+    /// Widen or narrow how far a binding moves its joint.
     SetRange(usize, f32),
+    /// Add a generator channel. `true` locks it to the transport.
+    AddGenerator(bool),
+    SetShape(animus_signal::ChannelId, animus_signal::Shape),
+    SetRate(animus_signal::ChannelId, f32),
+    /// Show or hide a binding's envelope editor.
+    ToggleEnvelope(usize),
+    /// Whatever the envelope editor asked for, on this binding.
+    Envelope(usize, crate::widgets::EnvelopeEdit),
 }
 
 /// What the Output panel asked for this frame.
@@ -767,12 +785,33 @@ impl TabViewer<'_> {
             }
         }
 
+        // **A generator is a channel like any other**, so it is added here
+        // rather than in a system of its own: an LFO and a fader are the
+        // same kind of thing to everything downstream, and the panel should
+        // not pretend otherwise.
+        ui.add_space(theme::S_SM);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::S_XS;
+            if crate::widgets::chip(ui, "+ LFO", false, theme::MID)
+                .on_hover_text("A free-running oscillator with its own rate")
+                .clicked()
+            {
+                self.signal_edits.push(SignalEdit::AddGenerator(false));
+            }
+            if crate::widgets::chip(ui, "+ SYNC", false, theme::MID)
+                .on_hover_text("An oscillator locked to the transport, in beats")
+                .clicked()
+            {
+                self.signal_edits.push(SignalEdit::AddGenerator(true));
+            }
+        });
+
         ui.add_space(theme::S_SM);
         if signal.bus.channels.is_empty() {
             crate::widgets::note(
                 ui,
-                "Nothing has arrived yet. Move a knob, a fader or a phone \
-                 and it will appear here.",
+                "Nothing yet. Move a knob, a fader or a phone and it will \
+                 appear here — or add an LFO above.",
             );
             return;
         }
@@ -835,6 +874,51 @@ impl TabViewer<'_> {
                     theme::GHOST
                 },
             );
+
+            // A generator has settings; a received channel has none, because
+            // what arrives is whatever the far end decided to send.
+            if let Some(wave) = channel.generator {
+                let locked = matches!(channel.source, animus_signal::Source::BpmSync { .. });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = theme::S_XS;
+                    for shape in animus_signal::Shape::ALL {
+                        let on = shape == wave.shape;
+                        if crate::widgets::chip(
+                            ui,
+                            shape.label(),
+                            on,
+                            if on { theme::BRIGHT } else { theme::DIM },
+                        )
+                        .clicked()
+                        {
+                            self.signal_edits
+                                .push(SignalEdit::SetShape(channel.id, shape));
+                        }
+                    }
+                });
+                let mut rate = wave.rate;
+                // Beats per cycle when locked, cycles per second when free:
+                // two different questions, so two different units and two
+                // different ranges rather than one slider that means
+                // whichever the operator last remembered.
+                let response = if locked {
+                    crate::widgets::SliderRow::new("Cycle", &mut rate, 0.25..=32.0)
+                        .suffix(" beats")
+                        .decimals(2)
+                        .default_value(4.0)
+                        .show(ui)
+                } else {
+                    crate::widgets::SliderRow::new("Rate", &mut rate, 0.01..=8.0)
+                        .suffix(" Hz")
+                        .decimals(2)
+                        .default_value(0.25)
+                        .show(ui)
+                };
+                if response.changed() {
+                    self.signal_edits
+                        .push(SignalEdit::SetRate(channel.id, rate));
+                }
+            }
             ui.add_space(theme::S_2XS);
         }
     }
@@ -864,7 +948,11 @@ impl TabViewer<'_> {
             Selection::Joint(_, joint) => {
                 let learning = signal.bus.learn.is_some();
                 ui.horizontal(|ui| {
-                    for (label, axis) in [("Learn X", true), ("Learn Y", false)] {
+                    for (label, axis) in [
+                        ("Learn X", LearnAxis::X),
+                        ("Learn Y", LearnAxis::Y),
+                        ("Learn Rot", LearnAxis::Rotation),
+                    ] {
                         if ui
                             .add(
                                 egui::Button::new(
@@ -912,13 +1000,38 @@ impl TabViewer<'_> {
                     ui,
                     &if signal.bus.learn.is_some() {
                         format!(
-                            "Waiting for a control to move — it will drive joint {}.",
+                            "Armed for joint {}. Move a control, or pick a source below.",
                             joint.0
                         )
                     } else {
                         format!("Arming will wire a control to joint {}.", joint.0)
                     },
                 );
+
+                // **Two ways to finish an arming.** A generator never
+                // arrives, so Learn alone could never catch one; and an LFO
+                // that claimed an arming by itself would steal every binding
+                // from the fader the operator was reaching for, because it
+                // is always moving.
+                if learning && !signal.bus.channels.is_empty() {
+                    ui.add_space(theme::S_XS);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(theme::S_XS, theme::S_XS);
+                        for channel in &signal.bus.channels {
+                            if crate::widgets::chip(
+                                ui,
+                                &channel.source.label(),
+                                false,
+                                theme::DATA_CYAN,
+                            )
+                            .on_hover_text("Wire this source to the armed target")
+                            .clicked()
+                            {
+                                self.signal_edits.push(SignalEdit::BindArmedTo(channel.id));
+                            }
+                        }
+                    });
+                }
             }
             _ => crate::widgets::note(ui, "Select a joint to bind a control to it."),
         }
@@ -978,13 +1091,61 @@ impl TabViewer<'_> {
             });
 
             let mut span = binding.high;
-            let response = crate::widgets::SliderRow::new("Range", &mut span, 4.0..=400.0)
-                .suffix(" px")
-                .decimals(0)
-                .default_value(animus_signal::DEFAULT_RANGE_PX)
-                .show(ui);
+            let rotation = matches!(binding.dst, animus_signal::Target::JointRotation(..));
+            let response = crate::widgets::SliderRow::new(
+                "Range",
+                &mut span,
+                if rotation { 1.0..=180.0 } else { 4.0..=400.0 },
+            )
+            .suffix(binding.dst.unit())
+            .decimals(0)
+            .default_value(binding.dst.default_range())
+            .show(ui);
             if response.changed() {
                 self.signal_edits.push(SignalEdit::SetRange(index, span));
+            }
+
+            // **The envelope opens where the binding is.** Resolume puts it
+            // on the parameter for the same reason: the curve and the thing
+            // it shapes have to be readable together, or the operator is
+            // tuning a shape they cannot see the effect of.
+            let open = self.state.open_envelope == Some(index);
+            ui.horizontal(|ui| {
+                if crate::widgets::chip(
+                    ui,
+                    "ENVELOPE",
+                    open || !binding.envelope.is_identity(),
+                    if open {
+                        theme::BRIGHT
+                    } else if binding.envelope.is_identity() {
+                        theme::DIM
+                    } else {
+                        theme::GO_GREEN
+                    },
+                )
+                .on_hover_text(
+                    "Shape whatever arrives on this channel. Double-click the \
+                     curve to add a keyframe, double-click one to remove it, \
+                     right-click for its easing.",
+                )
+                .clicked()
+                {
+                    self.signal_edits.push(SignalEdit::ToggleEnvelope(index));
+                }
+                if !binding.envelope.is_identity() {
+                    ui.label(
+                        egui::RichText::new(format!("{} keys", binding.envelope.len()))
+                            .monospace()
+                            .size(theme::FS_MICRO)
+                            .color(theme::HINT),
+                    );
+                }
+            });
+            if open {
+                let live = signal.bus.channel(binding.src).map(|c| c.value);
+                if let Some(edit) = crate::widgets::envelope_editor(ui, &binding.envelope, live) {
+                    self.signal_edits.push(SignalEdit::Envelope(index, edit));
+                }
             }
             ui.add_space(theme::S_2XS);
         }

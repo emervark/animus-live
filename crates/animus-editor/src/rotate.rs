@@ -38,37 +38,9 @@ use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use glam::Vec2;
 
-use animus_runtime::{DocumentRes, HeldJoint, JointTargets};
+use animus_runtime::{DocumentRes, HeldJoint, JointTargets, LiveRotations};
 
 use crate::rig;
-
-/// How far each joint is turned from its rest orientation, in radians.
-///
-/// Session state, like the sequencer's pattern: a pose is not a document
-/// edit, and writing one to the file would dirty a project nobody changed.
-/// In EDIT the resulting positions are captured into the step, which is
-/// where a pose that matters gets kept.
-#[derive(Resource, Debug, Default)]
-pub struct LiveRotations(pub HashMap<(PuppetId, JointId), f32>);
-
-impl LiveRotations {
-    pub fn get(&self, puppet: PuppetId, joint: JointId) -> f32 {
-        self.0.get(&(puppet, joint)).copied().unwrap_or(0.0)
-    }
-
-    /// Set an angle, or forget the joint entirely once it is back at rest.
-    ///
-    /// Forgetting matters: an entry left at 0° would keep writing targets
-    /// for every joint below it, and a written target is a standing
-    /// instruction that pins those joints out of the springs' reach.
-    pub fn set(&mut self, puppet: PuppetId, joint: JointId, angle: f32) {
-        if angle.abs() < 1e-4 {
-            self.0.remove(&(puppet, joint));
-        } else {
-            self.0.insert((puppet, joint), angle);
-        }
-    }
-}
 
 /// A rotation being dragged on the stage.
 ///
@@ -165,35 +137,5 @@ fn mesh_of(doc: &DocumentRes, puppet: PuppetId) -> Option<PuppetKindMesh<'_>> {
             skeleton: &m.skeleton,
         }),
         _ => None,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const P: PuppetId = PuppetId(3);
-    const J: JointId = JointId(7);
-
-    /// **Zero is not a rotation.** An entry sitting at 0° would keep writing
-    /// targets for every joint below it, and a written target pins that
-    /// joint out of the springs' reach — a limb that has been rotated back
-    /// to rest would go stiff instead of hanging.
-    #[test]
-    fn returning_to_rest_forgets_the_joint_rather_than_storing_zero() {
-        let mut r = LiveRotations::default();
-        r.set(P, J, 0.8);
-        assert_eq!(r.0.len(), 1);
-        r.set(P, J, 0.0);
-        assert!(
-            r.0.is_empty(),
-            "a joint back at rest is still driving targets"
-        );
-        assert_eq!(r.get(P, J), 0.0);
-    }
-
-    #[test]
-    fn an_unrotated_joint_reads_as_zero() {
-        assert_eq!(LiveRotations::default().get(P, J), 0.0);
     }
 }

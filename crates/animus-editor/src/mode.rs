@@ -32,7 +32,7 @@ use crate::state::{EditMode, EditorState, Selection};
 pub fn track_selection_live(
     mut state: ResMut<EditorState>,
     doc: Res<animus_runtime::DocumentRes>,
-    rotations: Res<crate::rotate::LiveRotations>,
+    rotations: Res<animus_runtime::LiveRotations>,
     solvers: Query<(
         &animus_runtime::PuppetRoot,
         &animus_runtime::CompiledRigRef,
@@ -110,7 +110,7 @@ pub fn settle_on_mode_change(
     mut targets: ResMut<JointTargets>,
     mut held: ResMut<HeldJoint>,
     mut drag: ResMut<ActiveDrag>,
-    mut rotations: ResMut<crate::rotate::LiveRotations>,
+    mut rotations: ResMut<animus_runtime::LiveRotations>,
     mut solvers: Query<(
         &animus_runtime::CompiledRigRef,
         &mut animus_runtime::PuppetSolver,
@@ -173,7 +173,7 @@ mod tests {
             .init_resource::<JointTargets>()
             .init_resource::<HeldJoint>()
             .init_resource::<ActiveDrag>()
-            .init_resource::<crate::rotate::LiveRotations>()
+            .init_resource::<animus_runtime::LiveRotations>()
             .add_systems(Update, settle_on_mode_change);
         app
     }
@@ -252,13 +252,13 @@ mod tests {
         let mut app = app();
         set_mode(&mut app, EditMode::Live);
         app.world_mut()
-            .resource_mut::<crate::rotate::LiveRotations>()
+            .resource_mut::<animus_runtime::LiveRotations>()
             .set(P, J, 0.9);
 
         set_mode(&mut app, EditMode::Edit);
         assert_eq!(
             app.world()
-                .resource::<crate::rotate::LiveRotations>()
+                .resource::<animus_runtime::LiveRotations>()
                 .get(P, J),
             0.0
         );

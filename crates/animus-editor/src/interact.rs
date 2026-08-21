@@ -208,7 +208,7 @@ pub fn apply_interactions(
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     target: Option<Res<ViewportTarget>>,
     mut held: ResMut<animus_runtime::HeldJoint>,
-    mut rotations: ResMut<crate::rotate::LiveRotations>,
+    mut rotations: ResMut<animus_runtime::LiveRotations>,
     mut rotation_drag: ResMut<crate::rotate::RotationDrag>,
     solvers: Query<(
         &animus_runtime::PuppetRoot,
@@ -637,7 +637,7 @@ pub fn apply_dock_output(
     )>,
     mut seq: ResMut<animus_runtime::Sequencer>,
     mut wants_fit: ResMut<crate::fit::WantsFit>,
-    mut rotations: ResMut<crate::rotate::LiveRotations>,
+    mut rotations: ResMut<animus_runtime::LiveRotations>,
 ) {
     let Some(out) = out.0.take() else { return };
 
@@ -955,7 +955,7 @@ pub fn keyboard_shortcuts(
     mut targets: ResMut<JointTargets>,
     mut drag: ResMut<ActiveDrag>,
     mut seq: ResMut<animus_runtime::Sequencer>,
-    mut rotations: ResMut<crate::rotate::LiveRotations>,
+    mut rotations: ResMut<animus_runtime::LiveRotations>,
     mut solvers: Query<(
         &animus_runtime::CompiledRigRef,
         &mut animus_runtime::PuppetSolver,
@@ -1128,7 +1128,7 @@ fn turnable(doc: &DocumentRes, puppet: PuppetId, joint: animus_core::ids::JointI
 /// one writer separate is what makes "who can change this" answerable.
 pub fn apply_signal_edits(
     mut out: ResMut<FrameDockOutput>,
-    state: Res<EditorState>,
+    mut state: ResMut<EditorState>,
     signal: Option<ResMut<animus_runtime::SignalBusRes>>,
 ) {
     let Some(dock) = out.0.as_mut() else { return };
@@ -1137,6 +1137,7 @@ pub fn apply_signal_edits(
         return;
     }
     let Some(mut signal) = signal else { return };
+    let mut open_envelope = state.open_envelope;
 
     for edit in edits {
         match edit {
@@ -1155,14 +1156,19 @@ pub fn apply_signal_edits(
                     signal.bus.bindings.remove(i);
                 }
             }
-            crate::dock::SignalEdit::Learn(x_axis) => {
+            crate::dock::SignalEdit::Learn(axis) => {
                 if let Selection::Joint(puppet, joint) = state.selection {
-                    signal.bus.learn = Some(if x_axis {
-                        animus_signal::Target::JointX(puppet, joint)
-                    } else {
-                        animus_signal::Target::JointY(puppet, joint)
+                    signal.bus.learn = Some(match axis {
+                        crate::dock::LearnAxis::X => animus_signal::Target::JointX(puppet, joint),
+                        crate::dock::LearnAxis::Y => animus_signal::Target::JointY(puppet, joint),
+                        crate::dock::LearnAxis::Rotation => {
+                            animus_signal::Target::JointRotation(puppet, joint)
+                        }
                     });
                 }
+            }
+            crate::dock::SignalEdit::BindArmedTo(id) => {
+                signal.bus.bind_armed_to(id);
             }
             crate::dock::SignalEdit::CancelLearn => signal.bus.learn = None,
             crate::dock::SignalEdit::SetRange(i, span) => {
@@ -1174,6 +1180,67 @@ pub fn apply_signal_edits(
                     b.low = -span;
                 }
             }
+            crate::dock::SignalEdit::AddGenerator(locked) => {
+                signal.bus.add_generator(locked);
+            }
+            crate::dock::SignalEdit::SetShape(id, shape) => {
+                if let Some(c) = signal.bus.channels.iter_mut().find(|c| c.id == id)
+                    && let Some(wave) = c.generator.as_mut()
+                {
+                    wave.shape = shape;
+                }
+            }
+            crate::dock::SignalEdit::SetRate(id, rate) => {
+                if let Some(c) = signal.bus.channels.iter_mut().find(|c| c.id == id)
+                    && let Some(wave) = c.generator.as_mut()
+                {
+                    wave.rate = rate.max(1e-3);
+                }
+            }
+            crate::dock::SignalEdit::ToggleEnvelope(i) => {
+                open_envelope = Some(if open_envelope == Some(i) {
+                    usize::MAX
+                } else {
+                    i
+                });
+            }
+            crate::dock::SignalEdit::Envelope(i, edit) => {
+                let Some(binding) = signal.bus.bindings.get_mut(i) else {
+                    continue;
+                };
+                use crate::widgets::EnvelopeEdit;
+                match edit {
+                    EnvelopeEdit::Move(k, phase, value) => {
+                        binding.envelope.set(k, phase, value);
+                    }
+                    EnvelopeEdit::Add(phase, value) => {
+                        binding.envelope.add(animus_signal::Keyframe {
+                            phase,
+                            value,
+                            // A new keyframe inherits the shape of the
+                            // segment it was dropped into, so adding one to
+                            // a curve does not flatten it.
+                            curve: binding
+                                .envelope
+                                .keys()
+                                .iter()
+                                .find(|k| k.phase >= phase)
+                                .map(|k| k.curve)
+                                .unwrap_or_default(),
+                        });
+                    }
+                    EnvelopeEdit::Remove(k) => binding.envelope.remove(k),
+                    EnvelopeEdit::SetCurve(k, curve) => binding.envelope.set_curve(k, curve),
+                }
+            }
         }
     }
+    // `usize::MAX` is the sentinel the toggle uses for "close", so the
+    // match above can stay a simple assignment rather than reaching for the
+    // editor state it is not allowed to hold mutably while borrowing the
+    // bus.
+    state.open_envelope = match open_envelope {
+        Some(i) if i == usize::MAX => None,
+        other => other,
+    };
 }

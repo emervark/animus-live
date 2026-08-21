@@ -186,7 +186,7 @@ pub fn draw_rotation_gizmo(
     doc: Res<DocumentRes>,
     scale: Res<RenderScale>,
     state: Res<EditorState>,
-    rotations: Res<crate::rotate::LiveRotations>,
+    rotations: Res<animus_runtime::LiveRotations>,
     target: Option<Res<crate::viewport::ViewportTarget>>,
     roots: Query<(&PuppetRoot, &CompiledRigRef, &PuppetSolver)>,
 ) {

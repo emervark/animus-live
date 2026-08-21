@@ -82,7 +82,7 @@ impl Plugin for EditorPlugin {
             .add_systems(Update, crate::mode::settle_on_mode_change)
             .add_systems(Update, crate::mode::track_selection_live)
             .add_systems(Update, crate::mode::hold_rest_in_rig)
-            .init_resource::<crate::rotate::LiveRotations>()
+            .init_resource::<animus_runtime::LiveRotations>()
             .init_resource::<crate::rotate::RotationDriven>()
             .init_resource::<crate::rotate::RotationDrag>()
             // After the drag, so a hand that has grabbed a joint has already

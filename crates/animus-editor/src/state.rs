@@ -231,6 +231,11 @@ pub struct EditorState {
     pub live_rotation: f32,
     /// What the viewport draws over the artwork.
     pub overlays: Overlays,
+    /// Which binding has its envelope editor open, if any.
+    ///
+    /// One at a time: two curves on screen at once is two curves the
+    /// operator has to tell apart, and the panel is 300px wide.
+    pub open_envelope: Option<usize>,
     /// Whether the output settings are showing.
     ///
     /// Opened from the title bar's output chip rather than living in a panel:
@@ -256,6 +261,7 @@ impl Default for EditorState {
             live_offset: None,
             live_rotation: 0.0,
             overlays: Overlays::default(),
+            open_envelope: None,
             output_menu_open: false,
         }
     }

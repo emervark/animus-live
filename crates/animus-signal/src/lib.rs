@@ -30,6 +30,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use animus_core::ids::{JointId, PuppetId};
 
+pub use envelope::{Curve, Ease, Envelope, Keyframe};
+
+pub mod envelope;
 pub mod midi;
 pub mod osc;
 
@@ -47,6 +50,11 @@ pub enum Source {
     MidiCc { channel: u8, cc: u8 },
     /// An OSC address, exactly as it arrived.
     Osc { address: String },
+    /// A free-running oscillator with its own rate, in Hz.
+    Lfo { index: u32 },
+    /// An oscillator locked to the transport, so a joint breathes in step
+    /// with the pattern rather than beside it.
+    BpmSync { index: u32 },
 }
 
 impl Source {
@@ -55,6 +63,99 @@ impl Source {
         match self {
             Source::MidiCc { channel, cc } => format!("midi {}·cc {cc}", channel + 1),
             Source::Osc { address } => format!("osc {address}"),
+            Source::Lfo { index } => format!("lfo {index}"),
+            Source::BpmSync { index } => format!("sync {index}"),
+        }
+    }
+
+    /// Does the app produce this value, rather than receive it?
+    pub fn is_generated(&self) -> bool {
+        matches!(self, Source::Lfo { .. } | Source::BpmSync { .. })
+    }
+}
+
+/// The wave a generator traces.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Shape {
+    #[default]
+    Sine,
+    Triangle,
+    /// Ramps up and snaps back.
+    Saw,
+    Square,
+    /// One new value per cycle, held. Sample-and-hold, not white noise:
+    /// a value that changed every frame would read as a broken joint
+    /// rather than as a choice.
+    Noise,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 5] = [
+        Shape::Sine,
+        Shape::Triangle,
+        Shape::Saw,
+        Shape::Square,
+        Shape::Noise,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Shape::Sine => "sine",
+            Shape::Triangle => "tri",
+            Shape::Saw => "saw",
+            Shape::Square => "square",
+            Shape::Noise => "noise",
+        }
+    }
+
+    /// The wave at `phase` (0..1), as a value in 0..1.
+    pub fn at(self, phase: f32) -> f32 {
+        let p = phase.rem_euclid(1.0);
+        match self {
+            Shape::Sine => 0.5 - 0.5 * (p * std::f32::consts::TAU).cos(),
+            Shape::Triangle => 1.0 - (2.0 * p - 1.0).abs(),
+            Shape::Saw => p,
+            Shape::Square => {
+                if p < 0.5 {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            // Hashed from the cycle number, so the same cycle always gives
+            // the same value: a pattern that changed every time it played
+            // would be unrehearsable.
+            Shape::Noise => {
+                let cycle = phase.floor() as i64 as u64;
+                let mut h = cycle.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                h ^= h >> 29;
+                h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                h ^= h >> 32;
+                (h & 0xFFFF) as f32 / 65535.0
+            }
+        }
+    }
+}
+
+/// A channel the app drives itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Generator {
+    pub shape: Shape,
+    /// Free LFO: cycles per second. Transport-locked: beats per cycle.
+    pub rate: f32,
+    /// Where it has got to. Kept rather than derived from a clock, so a
+    /// rate change bends the wave from here instead of jumping it.
+    pub phase: f32,
+}
+
+impl Default for Generator {
+    fn default() -> Self {
+        Self {
+            shape: Shape::Sine,
+            // Slow enough to read as breathing rather than as a fault, and
+            // for the transport-locked kind, one cycle per bar.
+            rate: 0.25,
+            phase: 0.0,
         }
     }
 }
@@ -72,6 +173,9 @@ pub struct Channel {
     /// something unwanted should be silenceable without the operator having
     /// to unplug it mid-show.
     pub on: bool,
+    /// Set on the channels the app drives itself. `None` means the value
+    /// arrives from outside.
+    pub generator: Option<Generator>,
 }
 
 /// What a binding drives.
@@ -79,12 +183,16 @@ pub struct Channel {
 pub enum Target {
     JointX(PuppetId, JointId),
     JointY(PuppetId, JointId),
+    /// Turn the joint, carrying everything below it. The range is in
+    /// degrees rather than pixels, which is why the binding's own range
+    /// asks what unit it is in before showing a number.
+    JointRotation(PuppetId, JointId),
 }
 
 impl Target {
     pub fn joint(self) -> (PuppetId, JointId) {
         match self {
-            Target::JointX(p, j) | Target::JointY(p, j) => (p, j),
+            Target::JointX(p, j) | Target::JointY(p, j) | Target::JointRotation(p, j) => (p, j),
         }
     }
 
@@ -92,12 +200,32 @@ impl Target {
         match self {
             Target::JointX(..) => "position.x",
             Target::JointY(..) => "position.y",
+            Target::JointRotation(..) => "rotation",
+        }
+    }
+
+    /// What the binding's range is measured in.
+    pub fn unit(self) -> &'static str {
+        match self {
+            Target::JointRotation(..) => "\u{00b0}",
+            _ => " px",
+        }
+    }
+
+    /// A sensible span for a freshly-learned binding on this target.
+    pub fn default_range(self) -> f32 {
+        match self {
+            Target::JointRotation(..) => 45.0,
+            _ => DEFAULT_RANGE_PX,
         }
     }
 }
 
 /// A channel wired to a target, with the range it moves through.
-#[derive(Debug, Clone, Copy, PartialEq)]
+///
+/// Not `Copy` any more: an envelope owns its keyframes. Bindings are edited
+/// in place and read by reference, so nothing wanted a bitwise copy of one.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Binding {
     pub src: ChannelId,
     pub dst: Target,
@@ -107,6 +235,13 @@ pub struct Binding {
     /// And at 1.
     pub high: f32,
     pub on: bool,
+    /// The shape the incoming value takes on its way through.
+    ///
+    /// **On the input, not on the output.** One curve reshapes whatever
+    /// arrives — a fader, an OSC message, an LFO, the transport — which is
+    /// what stops this becoming two parallel systems, one for "keyframe
+    /// animation" and one for "live input".
+    pub envelope: Envelope,
 }
 
 impl Binding {
@@ -116,8 +251,14 @@ impl Binding {
     /// overshoots should reach the end of the range and stop, not throw the
     /// limb off the stage.
     pub fn map(&self, value: f32) -> f32 {
-        let t = value.clamp(0.0, 1.0);
+        let t = self.envelope.sample(value.clamp(0.0, 1.0));
         self.low + (self.high - self.low) * t
+    }
+
+    /// What arrives, before the envelope. Shown beside the output so the
+    /// operator can see the curve doing its work.
+    pub fn input(&self, value: f32) -> f32 {
+        value.clamp(0.0, 1.0)
     }
 }
 
@@ -164,6 +305,7 @@ impl Bus {
                     source: update.source,
                     value: update.value,
                     on: true,
+                    generator: None,
                 });
                 // A channel appearing at all is movement enough: the operator
                 // just touched something that had never spoken before.
@@ -176,19 +318,99 @@ impl Bus {
         id
     }
 
+    /// Bind the armed target to a channel by name.
+    ///
+    /// **A generator never "arrives", so Learn can never catch one.** An LFO
+    /// that claimed an armed Learn the moment it was armed would be worse
+    /// than useless: it would steal every binding from the fader the
+    /// operator was reaching for, because it is always moving. So arming
+    /// offers two ways to finish — move a control, or pick a source — and a
+    /// generator can only be picked.
+    pub fn bind_armed_to(&mut self, src: ChannelId) -> bool {
+        if self.learn.is_none() || self.channel(src).is_none() {
+            return false;
+        }
+        self.bind_if_learning(src);
+        true
+    }
+
     fn bind_if_learning(&mut self, src: ChannelId) {
         let Some(dst) = self.learn.take() else { return };
         // Re-arming over an existing binding replaces it rather than stacking
         // a second one on the same target, which would leave two sources
         // fighting with no way to see why.
         self.bindings.retain(|b| b.dst != dst);
+        let span = dst.default_range();
         self.bindings.push(Binding {
             src,
             dst,
-            low: -DEFAULT_RANGE_PX,
-            high: DEFAULT_RANGE_PX,
+            low: -span,
+            high: span,
             on: true,
+            envelope: Envelope::default(),
         });
+    }
+
+    /// Add a generator channel: an LFO, or one locked to the transport.
+    ///
+    /// **A generator is a channel like any other**, which is the whole
+    /// reason it is worth doing this way: binding a joint to an LFO uses
+    /// the same code as binding it to a fader, and an envelope shapes both
+    /// identically. Nothing downstream needs to know the difference.
+    pub fn add_generator(&mut self, locked: bool) -> ChannelId {
+        let index = self
+            .channels
+            .iter()
+            .filter(|c| {
+                matches!(
+                    (&c.source, locked),
+                    (Source::Lfo { .. }, false) | (Source::BpmSync { .. }, true)
+                )
+            })
+            .count() as u32
+            + 1;
+        self.next_id += 1;
+        let id = ChannelId(self.next_id);
+        self.channels.push(Channel {
+            id,
+            source: if locked {
+                Source::BpmSync { index }
+            } else {
+                Source::Lfo { index }
+            },
+            value: 0.0,
+            on: true,
+            generator: Some(Generator {
+                // One cycle per bar for the locked kind; a slow breath for
+                // the free one.
+                rate: if locked { 4.0 } else { 0.25 },
+                ..Generator::default()
+            }),
+        });
+        id
+    }
+
+    /// Advance every generator.
+    ///
+    /// `dt` is the frame in seconds; `beats` is how far the transport has
+    /// moved since the last call, in beats. A transport-locked generator
+    /// reads the second and ignores the first, which is what keeps it in
+    /// step when the tempo changes mid-show.
+    pub fn tick(&mut self, dt: f32, beats: f32) {
+        for channel in &mut self.channels {
+            let locked = matches!(channel.source, Source::BpmSync { .. });
+            let Some(wave) = channel.generator.as_mut() else {
+                continue;
+            };
+            let rate = wave.rate.max(1e-4);
+            wave.phase += if locked { beats / rate } else { dt * rate };
+            // Wrapped rather than left to grow: an f32 phase counted in
+            // hours loses the precision that makes a slow LFO smooth.
+            if wave.phase > 1e6 {
+                wave.phase = wave.phase.fract();
+            }
+            channel.value = wave.shape.at(wave.phase);
+        }
     }
 
     pub fn channel(&self, id: ChannelId) -> Option<&Channel> {
@@ -345,6 +567,7 @@ mod tests {
             low: -10.0,
             high: 10.0,
             on: true,
+            envelope: Envelope::default(),
         };
         assert_eq!(b.map(0.0), -10.0);
         assert_eq!(b.map(1.0), 10.0);
@@ -382,5 +605,114 @@ mod tests {
         });
         bus.bindings[0].on = false;
         assert!(bus.offsets().is_empty());
+    }
+
+    /// **A generator is a channel like any other.** That is the whole point
+    /// of building it this way: binding a joint to an LFO uses the same code
+    /// as binding it to a fader, and an envelope shapes both the same.
+    #[test]
+    fn a_generator_channel_is_bindable_like_any_other() {
+        let mut bus = Bus::default();
+        let id = bus.add_generator(false);
+        bus.bindings.push(Binding {
+            src: id,
+            dst: Target::JointX(PuppetId(1), JointId(2)),
+            low: -10.0,
+            high: 10.0,
+            on: true,
+            envelope: Envelope::default(),
+        });
+        bus.tick(0.5, 0.0);
+        assert_eq!(bus.offsets().len(), 1);
+    }
+
+    /// A free LFO runs on the clock; a locked one runs on the transport and
+    /// ignores the clock, which is what keeps it in step when the tempo
+    /// changes mid-show.
+    #[test]
+    fn a_locked_generator_follows_beats_and_a_free_one_follows_seconds() {
+        let mut bus = Bus::default();
+        let free = bus.add_generator(false);
+        let locked = bus.add_generator(true);
+
+        bus.tick(0.0, 2.0);
+        assert_eq!(
+            bus.channel(free).unwrap().value,
+            0.0,
+            "no time passed, so the free one has not moved"
+        );
+        assert!(
+            bus.channel(locked).unwrap().value > 0.01,
+            "beats moved the locked one"
+        );
+
+        bus.tick(2.0, 0.0);
+        assert!(
+            bus.channel(free).unwrap().value > 0.0,
+            "seconds moved the free one"
+        );
+    }
+
+    /// Sample-and-hold, not white noise: a value that changed every frame
+    /// would read as a broken joint rather than as a choice, and the same
+    /// cycle must give the same value or a pattern is unrehearsable.
+    #[test]
+    fn the_noise_shape_holds_one_value_per_cycle() {
+        let a = Shape::Noise.at(3.1);
+        let b = Shape::Noise.at(3.9);
+        let c = Shape::Noise.at(4.1);
+        assert_eq!(a, b, "the same cycle is the same value");
+        assert_ne!(a, c, "a new cycle is a new value");
+    }
+
+    #[test]
+    fn every_shape_stays_inside_zero_and_one() {
+        for shape in Shape::ALL {
+            for i in 0..200 {
+                let v = shape.at(i as f32 / 37.0);
+                assert!(
+                    (0.0..=1.0).contains(&v),
+                    "{} left the band: {v}",
+                    shape.label()
+                );
+            }
+        }
+    }
+
+    /// **The envelope is on the input.** It reshapes whatever arrives, which
+    /// is what keeps live input and keyframed shape one system instead of
+    /// two.
+    #[test]
+    fn the_envelope_reshapes_the_value_before_the_range_is_applied() {
+        let mut envelope = Envelope::default();
+        envelope.add(Keyframe {
+            phase: 0.5,
+            value: 0.9,
+            curve: Curve::Linear,
+        });
+        let b = Binding {
+            src: ChannelId(1),
+            dst: Target::JointX(PuppetId(1), JointId(1)),
+            low: 0.0,
+            high: 100.0,
+            on: true,
+            envelope,
+        };
+        assert!(
+            (b.map(0.5) - 90.0).abs() < 1e-3,
+            "half in should give ninety out, not fifty"
+        );
+        assert_eq!(b.map(0.0), 0.0, "and the ends are still the ends");
+        assert_eq!(b.map(1.0), 100.0);
+    }
+
+    /// Rotation is measured in degrees, so a binding on it must not inherit
+    /// a range meant for pixels.
+    #[test]
+    fn a_rotation_binding_gets_a_range_in_degrees() {
+        let rotation = Target::JointRotation(PuppetId(1), JointId(1));
+        let position = Target::JointX(PuppetId(1), JointId(1));
+        assert_ne!(rotation.default_range(), position.default_range());
+        assert_ne!(rotation.unit(), position.unit());
     }
 }

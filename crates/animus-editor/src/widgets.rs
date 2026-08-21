@@ -806,6 +806,183 @@ pub fn meter(ui: &mut egui::Ui, value: f32, ink: egui::Color32) {
     }
 }
 
+// ── the envelope editor ────────────────────────────────────────────────
+
+/// What one pass over the envelope editor changed.
+///
+/// Intent, like every other control here: the editor names the act and the
+/// caller performs it. The envelope lives on a binding inside a resource the
+/// panel only borrows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EnvelopeEdit {
+    /// Drag: this keyframe went to this phase and value.
+    Move(usize, f32, f32),
+    /// Double-click on the curve.
+    Add(f32, f32),
+    /// Double-click on a keyframe.
+    Remove(usize),
+    /// Right-click menu.
+    SetCurve(usize, animus_signal::Curve),
+}
+
+/// The keyframe canvas: phase across, value up.
+///
+/// **Input and output are both drawn.** Resolume shows the incoming value as
+/// one vertical line and the outgoing value beside it, and that pairing is
+/// what makes an envelope legible at all — without it the operator is
+/// looking at a shape with no idea where on it they currently are. Here the
+/// input is a vertical line and the output a horizontal one, so where they
+/// cross *is* the curve's current answer.
+pub fn envelope_editor(
+    ui: &mut egui::Ui,
+    envelope: &animus_signal::Envelope,
+    live_input: Option<f32>,
+) -> Option<EnvelopeEdit> {
+    const HEIGHT: f32 = 160.0;
+    const GRAB: f32 = 7.0;
+
+    let width = ui.available_width();
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, HEIGHT), egui::Sense::click_and_drag());
+    let plot = rect.shrink(GRAB);
+    let mut edit = None;
+
+    let to_screen = |phase: f32, value: f32| {
+        egui::pos2(
+            plot.min.x + plot.width() * phase.clamp(0.0, 1.0),
+            // Value up: the y axis is inverted because a curve that read
+            // upside down would be unusable however correct the numbers.
+            plot.max.y - plot.height() * value.clamp(0.0, 1.0),
+        )
+    };
+    let to_env = |at: egui::Pos2| {
+        (
+            ((at.x - plot.min.x) / plot.width().max(1.0)).clamp(0.0, 1.0),
+            ((plot.max.y - at.y) / plot.height().max(1.0)).clamp(0.0, 1.0),
+        )
+    };
+
+    let p = ui.painter();
+    p.rect_filled(rect, theme::R_CONTROL as f32, theme::SCREEN_BLACK);
+    p.rect_stroke(
+        rect,
+        theme::R_CONTROL as f32,
+        egui::Stroke::new(1.0_f32, theme::SEAM),
+        egui::StrokeKind::Inside,
+    );
+    // Quarters, because a phase is read in quarters — a bar, a beat, a half.
+    for i in 1..4 {
+        let t = i as f32 / 4.0;
+        let hair = egui::Stroke::new(1.0_f32, theme::ROW_SEP);
+        p.line_segment([to_screen(t, 0.0), to_screen(t, 1.0)], hair);
+        p.line_segment([to_screen(0.0, t), to_screen(1.0, t)], hair);
+    }
+
+    // ── the curve ──
+    //
+    // Sampled rather than drawn from the keyframes, so what is on screen is
+    // literally what `sample` returns. A separately-drawn approximation
+    // would be a second implementation of the interpolation, free to drift.
+    const STEPS: usize = 120;
+    let mut points = Vec::with_capacity(STEPS + 1);
+    for i in 0..=STEPS {
+        let phase = i as f32 / STEPS as f32;
+        points.push(to_screen(phase, envelope.sample(phase)));
+    }
+    p.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.6_f32, theme::GO_GREEN),
+    ));
+
+    // ── where the value is right now ──
+    if let Some(input) = live_input {
+        let output = envelope.sample(input);
+        let at = to_screen(input, output);
+        p.line_segment(
+            [egui::pos2(at.x, plot.min.y), egui::pos2(at.x, plot.max.y)],
+            egui::Stroke::new(1.0_f32, theme::DATA_CYAN.gamma_multiply(0.5)),
+        );
+        p.line_segment(
+            [egui::pos2(plot.min.x, at.y), egui::pos2(plot.max.x, at.y)],
+            egui::Stroke::new(1.0_f32, theme::DATA_CYAN.gamma_multiply(0.5)),
+        );
+        p.circle_filled(at, 3.0, theme::DATA_CYAN);
+    }
+
+    // ── the keyframes ──
+    let pointer = response
+        .hover_pos()
+        .or_else(|| response.interact_pointer_pos());
+    let nearest = pointer.and_then(|at| {
+        envelope
+            .keys()
+            .iter()
+            .enumerate()
+            .map(|(i, k)| (i, to_screen(k.phase, k.value).distance(at)))
+            .filter(|(_, d)| *d <= GRAB * 2.0)
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+    });
+
+    for (i, key) in envelope.keys().iter().enumerate() {
+        let at = to_screen(key.phase, key.value);
+        let hot = nearest == Some(i);
+        p.circle_filled(at, if hot { 5.0 } else { 4.0 }, theme::APP_BG);
+        p.circle_stroke(
+            at,
+            if hot { 5.0 } else { 4.0 },
+            egui::Stroke::new(1.6_f32, if hot { theme::BRIGHT } else { theme::MID }),
+        );
+    }
+
+    // ── gestures ──
+    //
+    // Double-click adds on the curve and removes on a keyframe, which is
+    // Resolume's pairing: one gesture, and which one it means depends on
+    // what is under it. Nothing else in this editor is modal, and this is
+    // the place it costs nothing to be.
+    if response.double_clicked() {
+        if let Some(at) = response.interact_pointer_pos() {
+            edit = Some(match nearest {
+                Some(i) => EnvelopeEdit::Remove(i),
+                None => {
+                    let (phase, _) = to_env(at);
+                    EnvelopeEdit::Add(phase, envelope.sample(phase))
+                }
+            });
+        }
+    } else if response.dragged()
+        && let Some(at) = response.interact_pointer_pos()
+        && let Some(i) = nearest
+    {
+        let (phase, value) = to_env(at);
+        edit = Some(EnvelopeEdit::Move(i, phase, value));
+    }
+
+    if let Some(i) = nearest {
+        let curve = envelope.keys()[i].curve;
+        response.context_menu(|ui| {
+            ui.set_min_width(160.0);
+            ui.label(
+                egui::RichText::new("Curve into this keyframe")
+                    .size(theme::FS_TINY)
+                    .color(theme::FAINT),
+            );
+            for option in animus_signal::Curve::all() {
+                if ui
+                    .selectable_label(option == curve, option.label())
+                    .clicked()
+                {
+                    edit = Some(EnvelopeEdit::SetCurve(i, option));
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    edit
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

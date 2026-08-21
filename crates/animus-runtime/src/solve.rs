@@ -83,6 +83,39 @@ impl JointTargets {
 #[derive(Resource, Debug, Default)]
 pub struct HeldJoint(pub Option<(PuppetId, JointId)>);
 
+/// How far each joint is turned from its rest orientation, in radians.
+///
+/// **Beside [`JointTargets`] rather than in the editor**, because a rotation
+/// is a pose and posing is what the runtime does. It was in the editor while
+/// the only thing that could turn a joint was a hand on a dial; once a
+/// binding could turn one too, keeping it there would have meant applying
+/// the same idea in two crates — the sort of split that ends with one of
+/// them quietly disagreeing.
+///
+/// Session state, like the sequencer's pattern: a pose is not a document
+/// edit, and writing one to the file would dirty a project nobody changed.
+#[derive(Resource, Debug, Default)]
+pub struct LiveRotations(pub bevy::platform::collections::HashMap<(PuppetId, JointId), f32>);
+
+impl LiveRotations {
+    pub fn get(&self, puppet: PuppetId, joint: JointId) -> f32 {
+        self.0.get(&(puppet, joint)).copied().unwrap_or(0.0)
+    }
+
+    /// Set an angle, or forget the joint entirely once it is back at rest.
+    ///
+    /// Forgetting matters: an entry left at 0 degrees would keep writing
+    /// targets for every joint below it, and a written target is a standing
+    /// instruction that pins those joints out of the springs' reach.
+    pub fn set(&mut self, puppet: PuppetId, joint: JointId, angle: f32) {
+        if angle.abs() < 1e-4 {
+            self.0.remove(&(puppet, joint));
+        } else {
+            self.0.insert((puppet, joint), angle);
+        }
+    }
+}
+
 /// A puppet's state went non-finite and was reset. One puppet, not the show.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct SolverPanic(pub PuppetId);
