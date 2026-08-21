@@ -24,11 +24,27 @@ pub enum TabKind {
     Tools,
     Inspector,
     Solver,
+    Output,
     Channels,
     Bindings,
 }
 
 impl TabKind {
+    /// Every panel, in the order the View menu lists them: the two that
+    /// describe the scene, the two that act on it, the two that inspect it,
+    /// then the two that are still promises.
+    pub const ALL: [TabKind; 9] = [
+        TabKind::Viewport,
+        TabKind::Layers,
+        TabKind::Assets,
+        TabKind::Tools,
+        TabKind::Inspector,
+        TabKind::Solver,
+        TabKind::Output,
+        TabKind::Channels,
+        TabKind::Bindings,
+    ];
+
     pub fn title(self) -> &'static str {
         match self {
             TabKind::Viewport => "Viewport",
@@ -37,6 +53,7 @@ impl TabKind {
             TabKind::Tools => "Tools",
             TabKind::Inspector => "Inspector",
             TabKind::Solver => "Solver",
+            TabKind::Output => "Output",
             TabKind::Channels => "Channels",
             TabKind::Bindings => "Bindings",
         }
@@ -96,10 +113,15 @@ impl Tool {
 /// consequential mode in the application. Spec §8.6.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EditMode {
-    /// Dragging changes the joint's rest position and is undoable.
+    /// Build the skeleton. Dragging a joint changes its **rest position** and
+    /// is undoable; the mesh and the rig are what this mode edits.
     #[default]
+    Rig,
+    /// Pose the puppet into the selected step, frame by frame. Dragging pulls
+    /// the live puppet and the result is written into that step — the rig is
+    /// not touched.
     Edit,
-    /// Dragging writes a solver target and touches nothing in the document.
+    /// The show. Dragging pulls; nothing is written anywhere.
     Live,
 }
 
@@ -116,6 +138,22 @@ pub struct EditorState {
     /// renders arbitrary reflected data, which is a debugging tool and not
     /// something to put in front of an artist (spec §10.4).
     pub show_dev_inspector: bool,
+    /// The clip launcher folded down to its transport row.
+    ///
+    /// A view preference, not document state: the audit asks for the launcher
+    /// to get out of the way while mesh or rig editing needs the height.
+    pub clips_collapsed: bool,
+    /// How far the selected joint has been pulled from its rest position,
+    /// in image pixels — the inspector's LIVE read-out.
+    ///
+    /// Projected here once a frame by [`crate::mode::track_selection_live`]
+    /// rather than queried from the panel, because the panel runs inside
+    /// egui's pass where the solver's components are not in scope. Same
+    /// one-way shape as `PendingChanges`: one writer, many readers.
+    pub live_offset: Option<glam::Vec2>,
+    /// The selected joint's live rotation in radians, projected in the same
+    /// way and for the same reason as [`Self::live_offset`].
+    pub live_rotation: f32,
 }
 
 impl Default for EditorState {
@@ -128,28 +166,65 @@ impl Default for EditorState {
             undo: UndoStack::new(),
             viewport_image: None,
             show_dev_inspector: false,
+            clips_collapsed: false,
+            live_offset: None,
+            live_rotation: 0.0,
         }
     }
 }
 
 /// Three columns: what is in the scene, the thing itself, what it is made of.
+/// Is this panel currently anywhere in the dock?
+pub fn tab_is_open(dock: &DockState<TabKind>, tab: TabKind) -> bool {
+    dock.iter_all_tabs().any(|(_, t)| *t == tab)
+}
+
+/// Open a panel, or close it if it is already open.
+///
+/// **The reason this exists**: closing a panel used to be permanent. The tab
+/// bar has an X on every panel but the viewport, and nothing anywhere put one
+/// back — an operator who tidied away the Solver panel had to delete their
+/// saved layout from `%APPDATA%` to see it again.
+///
+/// A reopened panel joins the focused leaf rather than trying to remember
+/// where it used to live. Remembering would mean storing a shadow layout
+/// beside the real one, and the operator can drag it where they want in one
+/// gesture anyway.
+pub fn toggle_tab(dock: &mut DockState<TabKind>, tab: TabKind) {
+    if let Some(found) = dock.find_tab(&tab) {
+        // The viewport is the one surface that must not be closed: without it
+        // there is nothing to edit. The menu greys it out, and this is the
+        // second door.
+        if tab != TabKind::Viewport {
+            dock.remove_tab(found);
+        }
+        return;
+    }
+    dock.push_to_focused_leaf(tab);
+}
+
 pub fn default_layout() -> DockState<TabKind> {
     let mut dock = DockState::new(vec![TabKind::Viewport]);
     let surface = dock.main_surface_mut();
 
-    let [_viewport, left] = surface.split_left(
+    let [viewport, left] = surface.split_left(
         NodeIndex::root(),
         0.20,
         vec![TabKind::Layers, TabKind::Assets],
     );
     surface.split_below(left, 0.55, vec![TabKind::Tools]);
 
-    let [_viewport, right] = surface.split_right(
-        NodeIndex::root(),
-        0.78,
-        vec![TabKind::Inspector, TabKind::Solver],
+    let [_viewport, right] =
+        surface.split_right(viewport, 0.78, vec![TabKind::Inspector, TabKind::Solver]);
+    // Output sits with Channels and Bindings: all three are the outside world
+    // rather than the document. Three tabs also fit this column only because
+    // these names are short — "Inspector | Solver | Output" did not, and the
+    // third one rendered as "Outp".
+    surface.split_below(
+        right,
+        0.55,
+        vec![TabKind::Output, TabKind::Channels, TabKind::Bindings],
     );
-    surface.split_below(right, 0.55, vec![TabKind::Channels, TabKind::Bindings]);
 
     dock
 }
@@ -236,16 +311,11 @@ mod tests {
         let mut seen: Vec<TabKind> = dock.iter_all_tabs().map(|(_, t)| *t).collect();
         seen.sort_by_key(|t| format!("{t:?}"));
 
-        let mut expected = vec![
-            TabKind::Viewport,
-            TabKind::Layers,
-            TabKind::Assets,
-            TabKind::Tools,
-            TabKind::Inspector,
-            TabKind::Solver,
-            TabKind::Channels,
-            TabKind::Bindings,
-        ];
+        // Straight from `ALL`, so adding a panel updates the list in one
+        // place. It was written out by hand and the copy went stale the first
+        // time a panel was added — which is the failure this test exists to
+        // catch, so it should not be able to happen to the test itself.
+        let mut expected = TabKind::ALL.to_vec();
         expected.sort_by_key(|t| format!("{t:?}"));
 
         assert_eq!(
@@ -325,5 +395,41 @@ mod tests {
         assert!(broken.is_err());
         // and the editor's fallback is a usable layout, not an empty one
         assert!(default_layout().iter_all_tabs().count() >= 8);
+    }
+
+    /// The trap this closes: a panel closed by its X had nowhere to come
+    /// back from, and the only cure was deleting the saved layout file.
+    #[test]
+    fn a_closed_panel_can_be_reopened() {
+        let mut dock = default_layout();
+        assert!(tab_is_open(&dock, TabKind::Solver));
+
+        toggle_tab(&mut dock, TabKind::Solver);
+        assert!(!tab_is_open(&dock, TabKind::Solver), "it closed");
+
+        toggle_tab(&mut dock, TabKind::Solver);
+        assert!(tab_is_open(&dock, TabKind::Solver), "and it came back");
+    }
+
+    /// The viewport is the one surface that must survive the menu, the X, and
+    /// anything else: without it there is nothing to edit.
+    #[test]
+    fn the_viewport_cannot_be_toggled_away() {
+        let mut dock = default_layout();
+        toggle_tab(&mut dock, TabKind::Viewport);
+        assert!(tab_is_open(&dock, TabKind::Viewport));
+    }
+
+    /// Every panel must be reachable from the menu, or closing it is still a
+    /// one-way door for whichever one got left off the list.
+    #[test]
+    fn every_panel_in_the_default_layout_is_listed_in_the_menu() {
+        let dock = default_layout();
+        for (_, tab) in dock.iter_all_tabs() {
+            assert!(
+                TabKind::ALL.contains(tab),
+                "{tab:?} is in the layout but not in TabKind::ALL, so nothing can reopen it"
+            );
+        }
     }
 }

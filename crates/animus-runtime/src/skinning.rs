@@ -31,6 +31,7 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology, VertexAttributeValues};
 use bevy::prelude::*;
 use glam::{Mat4, Quat, Vec2, Vec3};
 
+use crate::components::MeshInfluences;
 use crate::coords::img_to_world;
 
 #[derive(Debug, thiserror::Error)]
@@ -56,6 +57,11 @@ pub enum BuildError {
 /// `commands` batch, never across frames.
 pub struct SkinnedMeshBuild {
     pub mesh: Mesh,
+    /// Whether the mesh carries joint attributes.
+    ///
+    /// The caller must attach `SkinnedMesh` if and only if this is true:
+    /// either half without the other is a render-time panic.
+    pub skinned: bool,
     /// One per bone, in `CompiledRig` bone order.
     pub inverse_bindposes: Vec<Mat4>,
     /// Bone rest transforms in puppet-local space, same order. The caller
@@ -64,6 +70,8 @@ pub struct SkinnedMeshBuild {
     pub bone_rest_transforms: Vec<Transform>,
     /// Warnings worth showing an artist. Never a reason to refuse to build.
     pub warnings: Vec<BuildWarning>,
+    /// The same weights that went into the mesh, kept for the editor.
+    pub influences: MeshInfluences,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -181,22 +189,43 @@ pub fn build_skinned_mesh(
     // MUST be spelled as Uint16x4. A bare `[u16; 4]` is ambiguous with
     // Unorm16x4, and picking the wrong one turns bone indices into
     // normalized floats — the mesh renders, wrongly.
-    mesh.insert_attribute(
-        Mesh::ATTRIBUTE_JOINT_INDEX,
-        VertexAttributeValues::Uint16x4(baked.joint_index),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, baked.joint_weight);
+    // A puppet with no bones is a picture, and a picture is not skinned.
+    //
+    // Attaching the joint attributes anyway gives every vertex index 0 at
+    // weight 0, which the shader resolves to the origin: the artwork
+    // collapses to a point and the operator sees nothing until they place
+    // their first bone. Worse, a mesh carrying `ATTRIBUTE_JOINT_INDEX`
+    // without a matching `SkinnedMesh` panics at render time (bevy#22469),
+    // so the two decisions have to be made together — here and at the spawn.
+    let skinned = rig.bone_count() > 0;
+    if skinned {
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_JOINT_INDEX,
+            VertexAttributeValues::Uint16x4(baked.joint_index.clone()),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, baked.joint_weight.clone());
+    }
     mesh.insert_indices(Indices::U32(mp.mesh.triangles.clone()));
 
     // Without this a skinned mesh is culled against its rest-pose bounds:
     // measured in M0-1 at 28.3% of frames wrongly discarded once the mesh
     // nears a view edge, against 0.1% with it.
-    let mesh = mesh
-        .with_generated_skinned_mesh_bounds()
-        .map_err(|e| BuildError::Bounds(format!("{e:?}")))?;
+    let mesh = if skinned {
+        mesh.with_generated_skinned_mesh_bounds()
+            .map_err(|e| BuildError::Bounds(format!("{e:?}")))?
+    } else {
+        // An unskinned mesh never leaves its bind pose, so Bevy's own
+        // bind-pose bounds are exactly right.
+        mesh
+    };
 
     Ok(SkinnedMeshBuild {
         mesh,
+        skinned,
+        influences: MeshInfluences {
+            joint_index: baked.joint_index.clone(),
+            joint_weight: baked.joint_weight.clone(),
+        },
         inverse_bindposes: build_inverse_bindposes(&rig, ppu, pivot),
         bone_rest_transforms: bone_rest_transforms(&rig, ppu, pivot),
         warnings,

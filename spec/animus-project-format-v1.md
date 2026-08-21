@@ -231,6 +231,7 @@ Also the shape of any `mesh_puppet.solver_override`.
 | `iterations` | integer | Constraint-relaxation passes per step. Deliberately incomplete convergence (4-8) is the intended feel. Default `8`. |
 | `gravity` | `[x, y]` | Default `[0, 0]`. |
 | `global_damping` | number | Default `0.98`. |
+| `rest_pull` | number (0..1) | How far every unpinned, undriven joint is moved toward its rest position each step, as a fraction of the remaining distance. Default `0.08`. Optional: a v1 file written before this field existed omits it, and a reader **must** treat a missing value as the default rather than as `0`. `0` means a joint keeps whatever pose it was last left in; the rest position is otherwise the pose a puppet returns to when nothing is driving it. |
 | `max_substeps_per_frame` | integer | Caps how many substeps one slow frame may run, so a stall can't trigger a burst of catch-up simulation. Default `8`. |
 | `enabled` | boolean | Default `true`. |
 

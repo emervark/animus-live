@@ -101,10 +101,33 @@ fn a_violent_yank_does_not_destabilise_the_rig() {
     assert!(st.positions().iter().all(|p| p.is_finite()));
 }
 
+/// Rewrite the fixture. `cargo test -p animus-core --test solver_golden --
+/// --ignored regenerate`
+///
+/// Ignored so it never runs by accident: it makes the guard below agree
+/// with whatever the physics does today, which is only ever correct when
+/// the physics changed on purpose.
+#[test]
+#[ignore = "rewrites the golden fixture; run deliberately"]
+fn regenerate() {
+    let out: Vec<[f32; 2]> = run(600).iter().map(|v| [v.x, v.y]).collect();
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/solver_golden_600.json"
+    );
+    std::fs::write(path, serde_json::to_string_pretty(&out).unwrap()).unwrap();
+}
+
 #[test]
 fn golden_positions_are_unchanged() {
     // Regenerate deliberately, never casually: any diff here means the
     // physics changed and every existing show will move differently.
+    //
+    // Last regenerated when `SolverConfig::rest_pull` arrived: every
+    // unpinned joint is now drawn back toward its rest position each tick,
+    // so a chain under gravity hangs nearer its rest line than it used to.
+    // That is the change, it was intended, and every show made before it
+    // will indeed move differently — nearer home.
     //
     // Tolerance note. Bit-identical results hold on ONE machine (that is
     // what `the_solver_is_deterministic` asserts), but not across

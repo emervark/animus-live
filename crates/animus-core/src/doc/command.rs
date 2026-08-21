@@ -30,7 +30,7 @@ use std::any::Any;
 use glam::Vec2;
 use thiserror::Error;
 
-use super::{AssetRef, AttachmentTable, Layer, Puppet, PuppetKind, SkeletonData};
+use super::{AssetRef, AttachmentTable, Layer, Puppet, PuppetKind, SkeletonData, Transform2Or3};
 use crate::ids::{BoneId, JointId, LayerId, PuppetId};
 
 /// What a command changed, at the finest granularity it knows.
@@ -225,6 +225,149 @@ impl DocCommand for MoveJointRest {
     }
 }
 
+/// Turn a joint, and everything hanging off it, about that joint.
+///
+/// Forward kinematics on a rig that has no stored hierarchy: the parent
+/// relation is derived from the bone graph by
+/// [`rig_tree`](crate::skeleton::rig_tree), so turning a shoulder carries the
+/// elbow, the wrist and the hand and leaves the torso where it was.
+///
+/// **The angle is stored, the positions are what move.** Nothing downstream
+/// reads [`Joint::rest_angle`](super::Joint::rest_angle) — the solver works
+/// on positions alone — so the angle exists to be shown in the inspector and
+/// to give the next rotation something to be relative to. Recording only the
+/// angle and rotating at compile time would be the other design; it would
+/// also mean a rig whose joint positions on disk are not where the puppet
+/// actually is, which is the kind of gap that costs a day.
+///
+/// Angles are radians in the image's own space, where Y runs **down**, so a
+/// positive angle turns clockwise on screen. That matches what the operator
+/// sees when they drag the dial to the right.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RotateJoint {
+    pub puppet: PuppetId,
+    pub joint: JointId,
+    pub from: f32,
+    pub to: f32,
+}
+
+impl RotateJoint {
+    fn turn(&self, p: &mut super::Project, by: f32) -> Result<PendingChanges, CommandError> {
+        let pup = p
+            .puppets
+            .get_mut(&self.puppet)
+            .ok_or(CommandError::NoSuchPuppet(self.puppet))?;
+        let mp = match &mut pup.kind {
+            PuppetKind::Mesh(m) => m,
+            _ => return Err(CommandError::NotAMeshPuppet(self.puppet)),
+        };
+        let pivot = mp
+            .skeleton
+            .joints
+            .get(&self.joint)
+            .ok_or(CommandError::NoSuchJoint(self.joint, self.puppet))?
+            .rest;
+
+        let below = crate::skeleton::rig_tree(&mp.skeleton).descendants(self.joint);
+        let (sin, cos) = by.sin_cos();
+        let mut changes = PendingChanges::none();
+        for id in below {
+            let Some(j) = mp.skeleton.joints.get_mut(&id) else {
+                continue;
+            };
+            let d = j.rest - pivot;
+            j.rest = pivot + Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
+            // Each joint's own stored angle turns with it, so a limb rotated
+            // as part of a shoulder still reports its own orientation.
+            j.rest_angle += by;
+            changes.extend(PendingChanges::one(DocChange::JointMoved(self.puppet, id)));
+        }
+        Ok(changes)
+    }
+}
+
+impl DocCommand for RotateJoint {
+    fn label(&self) -> &str {
+        "Rotate joint"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let changes = self.turn(p, self.to - self.from)?;
+        joint_mut(p, self.puppet, self.joint)?.rest_angle = self.to;
+        Ok(changes)
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let changes = self.turn(p, self.from - self.to)?;
+        joint_mut(p, self.puppet, self.joint)?.rest_angle = self.from;
+        Ok(changes)
+    }
+
+    fn merge(&mut self, next: &dyn DocCommand) -> bool {
+        match next.as_any().downcast_ref::<RotateJoint>() {
+            Some(n) if n.puppet == self.puppet && n.joint == self.joint => {
+                // Each command applied its own delta as it arrived, so the
+                // document is already correct; widening `to` is what keeps
+                // the single merged entry invertible across the whole drag.
+                self.to = n.to;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Set a joint's inverse mass — how readily it is thrown about.
+///
+/// Stored as the inverse because that is what the solver integrates with;
+/// the inspector shows the mass itself, since "2 kg" is a thing an operator
+/// can picture and "0.5" is not. Pinning is a separate flag and does not go
+/// through here: a pinned joint is immovable regardless of what it weighs,
+/// so unpinning restores the weight the operator chose rather than leaving
+/// them to remember it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetJointMass {
+    pub puppet: PuppetId,
+    pub joint: JointId,
+    /// Inverse mass, not mass.
+    pub from: f32,
+    pub to: f32,
+}
+
+impl DocCommand for SetJointMass {
+    fn label(&self) -> &str {
+        "Set joint mass"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        joint_mut(p, self.puppet, self.joint)?.inv_mass = self.to;
+        Ok(PendingChanges::one(DocChange::SkeletonChanged(self.puppet)))
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        joint_mut(p, self.puppet, self.joint)?.inv_mass = self.from;
+        Ok(PendingChanges::one(DocChange::SkeletonChanged(self.puppet)))
+    }
+
+    fn merge(&mut self, next: &dyn DocCommand) -> bool {
+        match next.as_any().downcast_ref::<SetJointMass>() {
+            Some(n) if n.puppet == self.puppet && n.joint == self.joint => {
+                self.to = n.to;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 /// Which scalar on a bone a [`SetBoneParam`] is driving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoneParam {
@@ -309,6 +452,85 @@ impl DocCommand for SetJointPinned {
         j.pinned = self.from;
         j.inv_mass = if self.from { 0.0 } else { 1.0 };
         Ok(PendingChanges::one(DocChange::SkeletonChanged(self.puppet)))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Which solver setting a [`SetSolverParam`] is driving.
+///
+/// One command for all of them rather than one per setting: they share an
+/// inverse, they share a change, and every one of them ends in the same rig
+/// recompile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolverParam {
+    GravityX,
+    GravityY,
+    Damping,
+    Iterations,
+    /// How hard a released joint is pulled home. See
+    /// [`SolverConfig::rest_pull`](super::SolverConfig).
+    RestPull,
+}
+
+/// Change one solver setting for the whole show.
+///
+/// Solver settings are baked into `CompiledRig` when a rig is compiled, so
+/// this emits [`DocChange::SolverConfigChanged`] and the runtime recompiles
+/// every rig from it. Without that recompile the document would say one
+/// thing and the springs would keep doing another — which is what gravity
+/// did before this command existed: it was in the file, shown in the panel,
+/// and read by nothing after startup.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetSolverParam {
+    pub param: SolverParam,
+    pub from: f32,
+    pub to: f32,
+}
+
+impl SetSolverParam {
+    fn write(&self, p: &mut super::Project, value: f32) {
+        let cfg = &mut p.solver;
+        match self.param {
+            SolverParam::GravityX => cfg.gravity.x = value,
+            SolverParam::GravityY => cfg.gravity.y = value,
+            // A damping of zero is a puppet that never settles and one above
+            // 1.0 is a puppet that gains energy every tick, so the range is
+            // enforced here rather than trusted from the caller.
+            SolverParam::Damping => cfg.global_damping = value.clamp(0.0, 1.0),
+            SolverParam::Iterations => cfg.iterations = (value.round() as u32).clamp(1, 32),
+            SolverParam::RestPull => cfg.rest_pull = value.clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl DocCommand for SetSolverParam {
+    fn label(&self) -> &str {
+        "Solver setting"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.to);
+        Ok(PendingChanges::one(DocChange::SolverConfigChanged))
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.from);
+        Ok(PendingChanges::one(DocChange::SolverConfigChanged))
+    }
+
+    /// Dragging a slider is one undo entry, like every other slider here.
+    fn merge(&mut self, next: &dyn DocCommand) -> bool {
+        let Some(other) = next.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if other.param != self.param {
+            return false;
+        }
+        self.to = other.to;
+        true
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -826,6 +1048,417 @@ impl DocCommand for ImportImage {
 
     fn memory_bytes(&self) -> usize {
         std::mem::size_of_val(self) + puppet_bytes(&self.puppet) + self.asset.original_name.len()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// A layer's flat placement on the stage: where it is and how big.
+///
+/// Translation and scale travel together because they are not independent in
+/// the gesture that changes them. Dragging a corner handle keeps the opposite
+/// corner still, which moves the origin as well as resizing — writing them as
+/// two commands would let undo land halfway between, with the puppet the new
+/// size at the old position.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayerPlacement {
+    pub translation: Vec2,
+    pub scale: Vec2,
+}
+
+/// The smallest a layer may be scaled to.
+///
+/// Not zero: a zero scale is a puppet that vanishes and cannot be grabbed
+/// again, because its handles collapse onto each other.
+pub const MIN_LAYER_SCALE: f32 = 0.01;
+
+/// Move or resize a layer on the stage.
+///
+/// Translation is in **world units** — the same space the stage frame and the
+/// output camera are in, so dragging a puppet to the edge of the frame means
+/// what it looks like it means.
+///
+/// Nothing clamps it to the stage. A puppet half off the frame is a shot, not
+/// a mistake: an operator placing a character so the audience sees one
+/// shoulder is doing it on purpose.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TransformLayer {
+    pub layer: LayerId,
+    pub from: LayerPlacement,
+    pub to: LayerPlacement,
+}
+
+impl TransformLayer {
+    /// A pure move, leaving the size alone.
+    pub fn moved(layer: LayerId, from: Vec2, to: Vec2, scale: Vec2) -> Self {
+        Self {
+            layer,
+            from: LayerPlacement {
+                translation: from,
+                scale,
+            },
+            to: LayerPlacement {
+                translation: to,
+                scale,
+            },
+        }
+    }
+
+    fn write(
+        &self,
+        p: &mut super::Project,
+        v: LayerPlacement,
+    ) -> Result<PendingChanges, CommandError> {
+        let l = p
+            .layer_data
+            .get_mut(&self.layer)
+            .ok_or(CommandError::NoSuchLayer(self.layer))?;
+        let s = Vec2::new(
+            v.scale.x.abs().max(MIN_LAYER_SCALE) * v.scale.x.signum(),
+            v.scale.y.abs().max(MIN_LAYER_SCALE) * v.scale.y.signum(),
+        );
+        match &mut l.transform {
+            Transform2Or3::Flat {
+                translation, scale, ..
+            } => {
+                *translation = v.translation;
+                *scale = s;
+            }
+            Transform2Or3::Spatial {
+                translation, scale, ..
+            } => {
+                translation.x = v.translation.x;
+                translation.y = v.translation.y;
+                scale.x = s.x;
+                scale.y = s.y;
+            }
+        }
+        Ok(PendingChanges::one(DocChange::LayerPropsChanged(
+            self.layer,
+        )))
+    }
+}
+
+impl DocCommand for TransformLayer {
+    fn label(&self) -> &str {
+        "Place layer"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.to)
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.from)
+    }
+
+    /// A drag is one undo step, not one per mouse-move.
+    fn merge(&mut self, next: &dyn DocCommand) -> bool {
+        match next.as_any().downcast_ref::<TransformLayer>() {
+            Some(n) if n.layer == self.layer => {
+                self.to = n.to;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Resize the stage: what the audience sees, in pixels.
+///
+/// Document state, not a preference. The stage is the frame the show is
+/// composed against — every placement an operator makes is relative to it —
+/// so changing it after the fact re-crops the whole show and has to be as
+/// undoable as moving a puppet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetStageCanvas {
+    pub from: [u32; 2],
+    pub to: [u32; 2],
+}
+
+impl DocCommand for SetStageCanvas {
+    fn label(&self) -> &str {
+        "Set output resolution"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        // Never zero on either axis: the projector camera divides by these,
+        // and a zero-width stage is a division by zero on the show's own path.
+        p.stage.canvas = [self.to[0].max(1), self.to[1].max(1)];
+        Ok(PendingChanges::one(DocChange::LayerOrderChanged))
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        p.stage.canvas = [self.from[0].max(1), self.from[1].max(1)];
+        Ok(PendingChanges::one(DocChange::LayerOrderChanged))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Show or hide a layer.
+///
+/// Its own command rather than a `SetLayerScalar` variant because visibility
+/// is a switch, not a value on a scale: merging two hides into one would be
+/// wrong, and a slider that snaps between 0 and 1 is not what an eye icon is.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetLayerVisible {
+    pub layer: LayerId,
+    pub from: bool,
+    pub to: bool,
+}
+
+impl SetLayerVisible {
+    fn write(&self, p: &mut super::Project, v: bool) -> Result<PendingChanges, CommandError> {
+        let l = p
+            .layer_data
+            .get_mut(&self.layer)
+            .ok_or(CommandError::NoSuchLayer(self.layer))?;
+        l.visible = v;
+        Ok(PendingChanges::one(DocChange::LayerPropsChanged(
+            self.layer,
+        )))
+    }
+}
+
+impl DocCommand for SetLayerVisible {
+    fn label(&self) -> &str {
+        "Hide layer"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.to)
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        self.write(p, self.from)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Delete a layer, everything on it, and its place in the paint order.
+///
+/// A layer owns its puppets, so deleting one has to take them with it — an
+/// orphaned puppet would still be in `Project::puppets`, still projected into
+/// the scene, and no longer reachable from any panel. Undo has to put all
+/// three back: the layer, its position in the order, and each puppet at its
+/// own index, or an undo would quietly reorder the show.
+/// What a delete took, so undo can put every piece back where it was.
+#[derive(Debug, Clone)]
+struct RemovedLayer {
+    layer: Layer,
+    /// Its index in the paint order.
+    order: usize,
+    /// Its puppets, each with the index it held in `Project::puppets`.
+    puppets: Vec<(usize, Puppet)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoveLayer {
+    pub layer: LayerId,
+    removed: Option<RemovedLayer>,
+}
+
+impl RemoveLayer {
+    pub fn new(layer: LayerId) -> Self {
+        Self {
+            layer,
+            removed: None,
+        }
+    }
+}
+
+impl DocCommand for RemoveLayer {
+    fn label(&self) -> &str {
+        "Delete layer"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let order = p
+            .layers
+            .iter()
+            .position(|l| *l == self.layer)
+            .ok_or(CommandError::NoSuchLayer(self.layer))?;
+        let layer = p
+            .layer_data
+            .shift_remove(&self.layer)
+            .ok_or(CommandError::NoSuchLayer(self.layer))?;
+        p.layers.remove(order);
+
+        let mut changes = vec![DocChange::LayerRemoved(self.layer)];
+        let mut taken: Vec<(usize, Puppet)> = Vec::new();
+        // Descending, so each removal cannot disturb the index of the next.
+        let mut wanted: Vec<PuppetId> = layer.contents.clone();
+        wanted.sort_by_key(|id| std::cmp::Reverse(p.puppets.get_index_of(id)));
+        for id in wanted {
+            if let Some(index) = p.puppets.get_index_of(&id)
+                && let Some(puppet) = p.puppets.shift_remove(&id)
+            {
+                taken.push((index, puppet));
+                changes.push(DocChange::PuppetRemoved(id));
+            }
+        }
+
+        self.removed = Some(RemovedLayer {
+            layer,
+            order,
+            puppets: taken,
+        });
+        Ok(PendingChanges(changes))
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let Some(RemovedLayer {
+            layer,
+            order,
+            puppets: taken,
+        }) = self.removed.take()
+        else {
+            return Ok(PendingChanges::default());
+        };
+        let id = layer.id;
+        let mut changes = Vec::new();
+
+        // Ascending, so every insertion lands at the index it was taken from.
+        for (index, puppet) in taken.into_iter().rev() {
+            let pid = puppet.id;
+            p.puppets.insert(pid, puppet);
+            let last = p.puppets.len() - 1;
+            p.puppets.move_index(last, index.min(last));
+            changes.push(DocChange::PuppetAdded(pid));
+        }
+
+        p.layer_data.insert(id, layer);
+        let last = p.layer_data.len() - 1;
+        p.layer_data.move_index(last, order.min(last));
+        p.layers.insert(order.min(p.layers.len()), id);
+        changes.push(DocChange::LayerAdded(id));
+        Ok(PendingChanges(changes))
+    }
+
+    fn memory_bytes(&self) -> usize {
+        let held = self
+            .removed
+            .as_ref()
+            .map(|r| {
+                r.layer.name.len()
+                    + r.puppets
+                        .iter()
+                        .map(|(_, p)| puppet_bytes(p))
+                        .sum::<usize>()
+            })
+            .unwrap_or(0);
+        std::mem::size_of_val(self) + held
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+/// Copy a layer and everything on it, directly above the original.
+///
+/// **New identities are minted once and then reused.** Redo must not allocate
+/// a fresh set: bindings, selections and clip targets all refer to puppets by
+/// ID, so an undo-redo cycle that renamed everything would silently break
+/// every reference the operator had already made to the copy.
+#[derive(Debug, Clone)]
+pub struct DuplicateLayer {
+    pub source: LayerId,
+    /// `(the copy, its puppets, where it goes in the paint order)`.
+    made: Option<(Layer, Vec<Puppet>, usize)>,
+}
+
+impl DuplicateLayer {
+    pub fn new(source: LayerId) -> Self {
+        Self { source, made: None }
+    }
+}
+
+impl DocCommand for DuplicateLayer {
+    fn label(&self) -> &str {
+        "Duplicate layer"
+    }
+
+    fn apply(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        if self.made.is_none() {
+            let source = p
+                .layer_data
+                .get(&self.source)
+                .ok_or(CommandError::NoSuchLayer(self.source))?
+                .clone();
+            let order = p
+                .layers
+                .iter()
+                .position(|l| *l == self.source)
+                .ok_or(CommandError::NoSuchLayer(self.source))?;
+
+            let mut layer = source.clone();
+            layer.id = LayerId(p.alloc_id());
+            layer.name = format!("{} copy", source.name);
+            layer.contents.clear();
+
+            let mut puppets = Vec::new();
+            for pid in &source.contents {
+                let Some(original) = p.puppets.get(pid) else {
+                    continue;
+                };
+                let mut copy = original.clone();
+                copy.id = PuppetId(p.alloc_id());
+                layer.contents.push(copy.id);
+                puppets.push(copy);
+            }
+            self.made = Some((layer, puppets, order + 1));
+        }
+
+        let (layer, puppets, order) = self.made.clone().expect("just filled");
+        let mut changes = Vec::new();
+        for puppet in puppets {
+            let id = puppet.id;
+            p.puppets.insert(id, puppet);
+            changes.push(DocChange::PuppetAdded(id));
+        }
+        let id = layer.id;
+        p.layer_data.insert(id, layer);
+        p.layers.insert(order.min(p.layers.len()), id);
+        changes.push(DocChange::LayerAdded(id));
+        Ok(PendingChanges(changes))
+    }
+
+    fn revert(&mut self, p: &mut super::Project) -> Result<PendingChanges, CommandError> {
+        let Some((layer, puppets, _)) = self.made.as_ref() else {
+            return Ok(PendingChanges::default());
+        };
+        let mut changes = Vec::new();
+        let id = layer.id;
+        p.layer_data.shift_remove(&id);
+        p.layers.retain(|l| *l != id);
+        changes.push(DocChange::LayerRemoved(id));
+        for puppet in puppets {
+            p.puppets.shift_remove(&puppet.id);
+            changes.push(DocChange::PuppetRemoved(puppet.id));
+        }
+        Ok(PendingChanges(changes))
+    }
+
+    fn memory_bytes(&self) -> usize {
+        let held = self
+            .made
+            .as_ref()
+            .map(|(l, ps, _)| l.name.len() + ps.iter().map(puppet_bytes).sum::<usize>())
+            .unwrap_or(0);
+        std::mem::size_of_val(self) + held
     }
 
     fn as_any(&self) -> &dyn Any {

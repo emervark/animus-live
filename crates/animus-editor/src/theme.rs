@@ -76,24 +76,78 @@ pub const DATA_CYAN: Color32 = Color32::from_rgb(0x45, 0xC8, 0xE8);
 pub const CAUTION_AMBER: Color32 = Color32::from_rgb(0xE3, 0xA9, 0x4F);
 pub const GROUP_VIOLET: Color32 = Color32::from_rgb(0x8F, 0x8F, 0xFF);
 
-// ── radii, by component rather than one global rounding ────────────────
+// ── radii ──────────────────────────────────────────────────────────────
+//
+// Straight from `tokens/spacing.css`. **Five is the default control
+// radius**, not seven: buttons drawn at seven read as a slightly different
+// product from every other surface, which is exactly the "the buttons are
+// all wrong" that eyeballing produces.
 
+/// Chips, pills, tick marks.
 pub const R_TRACK: u8 = 2;
+/// Small badges.
 pub const R_BADGE: u8 = 4;
-pub const R_INPUT: u8 = 5;
+/// **Buttons and inputs — the default.**
+pub const R_CONTROL: u8 = 5;
 pub const R_CHIP: u8 = 6;
-pub const R_BUTTON: u8 = 7;
-pub const R_MENU: u8 = 8;
+/// Cards.
+pub const R_CARD: u8 = 8;
+/// Panels and other large surfaces.
 pub const R_PANEL: u8 = 10;
 
-// ── spacing scale ──────────────────────────────────────────────────────
+// Old names, kept so the sweep can happen in one place rather than in every
+// call site at once. Both now resolve to the token value.
+pub const R_INPUT: u8 = R_CONTROL;
+pub const R_BUTTON: u8 = R_CONTROL;
+pub const R_MENU: u8 = R_CARD;
 
-pub const S_HAIR: f32 = 3.0;
-pub const S_XS: f32 = 5.0;
+// ── spacing ────────────────────────────────────────────────────────────
+//
+// A ~2px grid with 8 as the base rhythm, from `tokens/spacing.css`. The
+// previous 3 and 5 were invented and landed between grid steps, which is
+// why dense rows never quite aligned with each other.
+
+pub const S_HAIR: f32 = 2.0;
+pub const S_XS: f32 = 4.0;
+pub const S_2XS: f32 = 6.0;
+/// The base rhythm: default gap and padding.
 pub const S_SM: f32 = 8.0;
 pub const S_MD: f32 = 12.0;
 pub const S_LG: f32 = 16.0;
-pub const S_XL: f32 = 24.0;
+pub const S_XL: f32 = 18.0;
+
+// ── type scale ─────────────────────────────────────────────────────────
+//
+// From `tokens/typography.css`. Deliberately small and dense. Every size in
+// this editor should come from here; a number typed at a call site is a
+// number that will not match the one three rows above it.
+
+/// Smallest tags and unit suffixes.
+pub const FS_MICRO: f32 = 8.0;
+/// Uppercase micro-labels and chips.
+pub const FS_TINY: f32 = 9.0;
+/// Control labels and secondary meta.
+pub const FS_LABEL: f32 = 10.0;
+/// Dense controls.
+pub const FS_SM: f32 = 11.0;
+/// Dense control labels.
+///
+/// **Not on the token scale**, which jumps 11 → 13. The comp itself sets
+/// `font-size:12px` on tool rows, clip names and stage tabs, so this names
+/// the deviation rather than rounding it away: at 11 the rows read as
+/// captions, at 13 a sidebar of them stops fitting.
+pub const FS_CONTROL: f32 = 12.0;
+/// Body default.
+pub const FS_BASE: f32 = 13.0;
+/// Section titles.
+pub const FS_MD: f32 = 14.0;
+/// Prominent values.
+pub const FS_LG: f32 = 15.0;
+/// Transport timecode and hero numerics.
+pub const FS_DISPLAY: f32 = 22.0;
+
+/// Tracking for the uppercase 9–10px labels, in egui's `extra_letter_spacing`.
+pub const TRACKING_LABEL: f32 = 0.5;
 
 /// Colours for the things only this tool draws.
 ///
@@ -106,8 +160,15 @@ pub mod gizmo {
     pub const WIREFRAME: Color32 = GHOST;
     /// Bones at rest.
     pub const BONE: Color32 = MID;
-    /// Joints at rest.
-    pub const JOINT: Color32 = BRIGHT;
+    /// Joints at rest: red, and its own red.
+    ///
+    /// A joint is the one thing in the viewport a hand reaches for, and pale
+    /// ink over pale artwork disappeared — so it is red, at the operator's
+    /// request. Deliberately *not* [`LIVE_CORAL`]: the Signal Rule reserves
+    /// coral for live, and a joint sitting at rest is not live. The duller
+    /// red leaves the brighter coral of [`DRIVEN`] a step to climb when the
+    /// joint actually starts moving.
+    pub const JOINT: Color32 = Color32::from_rgb(0xC8, 0x45, 0x45);
     /// A pinned joint is drawn as a square rather than recoloured — form
     /// carries the state so colour does not have to.
     pub const PINNED: Color32 = DIM;
@@ -115,6 +176,13 @@ pub mod gizmo {
     pub const RADIUS_FILL: Color32 = Color32::from_rgba_premultiplied(0x14, 0x14, 0x14, 0x14);
     /// Selection is a white veil, exactly as a selected row is.
     pub const SELECTION: Color32 = Color32::from_rgba_premultiplied(0x24, 0x24, 0x24, 0x24);
+    /// The ring around the selected joint. Opaque, because a veil over
+    /// artwork is not an answer to "did my click land?".
+    pub const SELECTED_RING: Color32 = BRIGHT;
+
+    /// The stage edge. Furniture, so the very bottom of the ink ramp: it has
+    /// to be findable when looked for and invisible when not.
+    pub const STAGE_FRAME: Color32 = Color32::from_rgb(0x3A, 0x40, 0x49);
 
     /// A joint bound to a live channel. Cyan because it *is* I/O — the same
     /// meaning the colour carries everywhere else.
@@ -177,12 +245,59 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = egui::vec2(S_SM, S_SM);
+
+    // Type comes from the scale, once, so a widget that does not override it
+    // is already right. Every hand-typed size at a call site was a number
+    // that did not match the one three rows above it.
+    use egui::{FontFamily, FontId, TextStyle};
+    style.text_styles = [
+        (
+            TextStyle::Heading,
+            FontId::new(FS_MD, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Body,
+            FontId::new(FS_SM, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Button,
+            FontId::new(FS_SM, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(FS_LABEL, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(FS_LABEL, FontFamily::Monospace),
+        ),
+    ]
+    .into();
+
+    // Dense, on the 2px grid.
+    style.spacing.item_spacing = egui::vec2(S_2XS, S_XS);
     style.spacing.button_padding = egui::vec2(S_SM, S_XS);
-    style.spacing.menu_margin = egui::Margin::same(6);
+    style.spacing.menu_margin = egui::Margin::same(S_XS as i8);
     style.spacing.indent = S_MD;
-    style.spacing.slider_width = 140.0;
     style.spacing.interact_size.y = 22.0;
+
+    // Sliders: a hairline rail with a small handle, as the comp draws them.
+    // egui's defaults are a thick rail and a wide grab handle, which is the
+    // single loudest thing in a panel that is meant to be quiet.
+    style.spacing.slider_width = 120.0;
+    style.spacing.slider_rail_height = 4.0;
+    style.visuals.slider_trailing_fill = true;
+    style.visuals.handle_shape = egui::style::HandleShape::Circle;
+
+    // Menus and popovers get the one shadow the system allows.
+    style.visuals.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 8],
+        blur: 24,
+        spread: 0,
+        color: Color32::from_black_alpha(153),
+    };
+    style.visuals.window_shadow = style.visuals.popup_shadow;
+
     style.visuals.striped = false;
     ctx.set_global_style(style);
 }

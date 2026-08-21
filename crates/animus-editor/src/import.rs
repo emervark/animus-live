@@ -136,6 +136,68 @@ fn display_name(file_name: &str) -> String {
         .unwrap_or_else(|| file_name.to_string())
 }
 
+/// Decode image bytes into a GPU texture.
+///
+/// Shared by the drop path and the open-a-project path so a puppet cannot
+/// arrive textured one way and white the other.
+fn upload_texture(bytes: &[u8], name: &str, images: &mut Assets<Image>) -> Option<Handle<Image>> {
+    let img = animus_core::image_in::decode(bytes, name).ok()?;
+    let (w, h) = (img.width(), img.height());
+    Some(images.add(Image::new(
+        bevy::render::render_resource::Extent3d {
+            width: w,
+            height: h,
+            ..default()
+        },
+        bevy::render::render_resource::TextureDimension::D2,
+        img.into_raw(),
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    )))
+}
+
+/// Load the textures a project arrived with.
+///
+/// The runtime deliberately never touches the filesystem, so the handles
+/// for an opened project have to be put there by someone who may — and the
+/// only code that did was the drop handler. A project opened from disk
+/// therefore spawned white puppets until this ran.
+pub fn load_existing_textures(
+    doc: Res<animus_runtime::DocumentRes>,
+    mut textures: ResMut<animus_runtime::PuppetTextures>,
+    mut images: ResMut<Assets<Image>>,
+    mut status: ResMut<ImportStatus>,
+    root: Res<ProjectRoot>,
+) {
+    let store = AssetStore::new(&root.0);
+    let mut missing = Vec::new();
+    for asset in doc.0.assets.values() {
+        if !matches!(asset.kind, AssetKind::Image) {
+            continue;
+        }
+        let path = store.path_for(asset);
+        match std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| upload_texture(&bytes, &asset.original_name, &mut images))
+        {
+            Some(handle) => {
+                textures.0.insert(asset.id, handle);
+            }
+            // Named, not swallowed: a puppet with a missing texture renders
+            // as a white silhouette, and "why is it white" is a question
+            // that should be answered on screen rather than guessed at.
+            None => missing.push(asset.original_name.clone()),
+        }
+    }
+    if !missing.is_empty() {
+        status.error(format!(
+            "could not read {} image(s) from this project: {}",
+            missing.len(),
+            missing.join(", ")
+        ));
+    }
+}
+
 /// Handle files dropped onto the window.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_dropped_files(
@@ -160,22 +222,10 @@ pub fn handle_dropped_files(
                 // Without this the puppet spawns with an untextured white
                 // material — found in the Task 15 dry run.
                 if let Ok(bytes) = std::fs::read(path_buf)
-                    && let Ok(img) =
-                        animus_core::image_in::decode(&bytes, &command.asset.original_name)
+                    && let Some(handle) =
+                        upload_texture(&bytes, &command.asset.original_name, &mut images)
                 {
-                    let (w, h) = (img.width(), img.height());
-                    let image = Image::new(
-                        bevy::render::render_resource::Extent3d {
-                            width: w,
-                            height: h,
-                            ..default()
-                        },
-                        bevy::render::render_resource::TextureDimension::D2,
-                        img.into_raw(),
-                        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
-                        bevy::asset::RenderAssetUsages::RENDER_WORLD,
-                    );
-                    textures.0.insert(command.asset.id, images.add(image));
+                    textures.0.insert(command.asset.id, handle);
                 }
 
                 let label = format!(

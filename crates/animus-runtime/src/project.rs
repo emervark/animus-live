@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use animus_core::doc::{DocChange, MeshPuppet, Project, PuppetKind, SolverConfig};
+use animus_core::doc::{DocChange, MeshPuppet, Project, PuppetKind, SolverConfig, Transform2Or3};
 use animus_core::ids::{AssetId, PuppetId};
 use animus_core::solver::{CompiledRig, SolverState};
 use bevy::camera::visibility::DynamicSkinnedMeshBounds;
@@ -150,11 +150,36 @@ fn layer_of(doc: &Project, id: PuppetId) -> Option<animus_core::ids::LayerId> {
 fn root_transform(doc: &Project, id: PuppetId) -> Transform {
     // `layer.depth` is authoritative world Z (spec §7.4), which is what lets
     // 2D layers interleave with 3D models later without a second concept.
-    let z = layer_of(doc, id)
-        .and_then(|lid| doc.layer_data.get(&lid))
-        .map(|l| l.depth)
-        .unwrap_or(0.0);
-    Transform::from_xyz(0.0, 0.0, z)
+    //
+    // The layer's own transform rides on top of it. It was in the document
+    // and read by nothing until now, which meant a puppet could only ever sit
+    // at the origin: there was no way to place one at the edge of the stage so
+    // the audience sees half of it.
+    let Some(layer) = layer_of(doc, id).and_then(|lid| doc.layer_data.get(&lid)) else {
+        return Transform::IDENTITY;
+    };
+    match layer.transform {
+        Transform2Or3::Flat {
+            translation,
+            rotation,
+            scale,
+        } => Transform {
+            translation: Vec3::new(translation.x, translation.y, layer.depth),
+            rotation: Quat::from_rotation_z(rotation),
+            scale: Vec3::new(scale.x, scale.y, 1.0),
+        },
+        // A spatial layer carries its own Z, but depth stays authoritative
+        // for paint order, so it overrides.
+        Transform2Or3::Spatial {
+            translation,
+            rotation,
+            scale,
+        } => Transform {
+            translation: Vec3::new(translation.x, translation.y, layer.depth),
+            rotation,
+            scale,
+        },
+    }
 }
 
 /// Drains [`PendingChangesRes`] and makes the world match the document.
@@ -195,11 +220,20 @@ pub fn sync_document(
             DocChange::SkeletonChanged(id) => raise(&mut work, id, Work::Skeleton),
             DocChange::JointMoved(id, _) => raise(&mut work, id, Work::Rig),
             DocChange::MaterialChanged(id) => raise(&mut work, id, Work::Full),
+            // Gravity, damping and iteration count are compiled *into*
+            // `CompiledRig`, so a solver change is a rig rebuild for every
+            // puppet. Left in the arm below, the document said one thing and
+            // the springs kept doing another: gravity was editable, saved,
+            // and read by nothing after startup.
+            DocChange::SolverConfigChanged => {
+                for id in doc.0.puppets.keys() {
+                    raise(&mut work, *id, Work::Rig);
+                }
+            }
             DocChange::LayerPropsChanged(_)
             | DocChange::LayerOrderChanged
             | DocChange::LayerAdded(_)
-            | DocChange::LayerRemoved(_)
-            | DocChange::SolverConfigChanged => {
+            | DocChange::LayerRemoved(_) => {
                 // Not per-puppet. Root transforms are re-derived at the end,
                 // which is the whole cost of a layer edit.
             }
@@ -273,11 +307,33 @@ pub fn sync_document(
     }
 
     // Root transforms are cheap and depend on layer depth, which any layer
-    // change can move.
+    // change can move. Visibility rides along for the same reason: it lives on
+    // the layer, and any layer change can flip it.
     for (id, ents) in index.puppets.iter() {
         commands
             .entity(ents.root)
-            .insert(root_transform(&doc.0, *id));
+            .insert(root_transform(&doc.0, *id))
+            .insert(layer_visibility(&doc.0, *id));
+    }
+}
+
+/// A puppet is visible when the layer it stands on is.
+///
+/// **Hidden means hidden everywhere**, projector included. The alternative —
+/// dimming the row in the panel and leaving the artwork on stage — is the
+/// worst of both: the operator believes the audience cannot see it.
+///
+/// `Hidden` rather than removing the entity: the solver keeps running, the rig
+/// keeps its state, and showing it again is one frame rather than a respawn.
+fn layer_visibility(doc: &Project, id: PuppetId) -> Visibility {
+    let visible = layer_of(doc, id)
+        .and_then(|lid| doc.layer_data.get(&lid))
+        .map(|l| l.visible)
+        .unwrap_or(true);
+    if visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
     }
 }
 
@@ -288,11 +344,16 @@ fn raise(work: &mut HashMap<PuppetId, Work>, id: PuppetId, level: Work) {
     }
 }
 
+/// Despawn a puppet: the root, and with it everything parented to it.
+///
+/// The root only. The mesh and every bone are spawned `ChildOf(root)` and
+/// `despawn` takes descendants with it, so despawning them again by id is
+/// not belt-and-braces — it is a second despawn of an entity that is already
+/// gone, and Bevy logs one error per bone for it. A rig edit on a
+/// seven-bone puppet printed seven, on every edit.
 fn despawn_puppet(commands: &mut Commands, index: &mut EntityIndex, id: PuppetId) {
     if let Some(ents) = index.puppets.remove(&id) {
-        for e in ents.all() {
-            commands.entity(e).despawn();
-        }
+        commands.entity(ents.root).despawn();
     }
 }
 
@@ -379,7 +440,7 @@ fn spawn_puppet(
             PuppetSolver(solver),
             crate::solve::LastStepOutcome(animus_core::solver::StepOutcome::Ok),
             root_transform(doc, id),
-            Visibility::default(),
+            layer_visibility(doc, id),
         ))
         .id();
     if let Some(lid) = layer_of(doc, id) {
@@ -440,20 +501,29 @@ fn spawn_puppet(
     // One batch: a mesh carrying ATTRIBUTE_JOINT_INDEX without a SkinnedMesh
     // panics at render time (bevy#22469), so these can never be split across
     // frames.
+    let influences = built.influences.clone();
     let mesh_entity = commands
         .spawn((
             PuppetMesh(id),
+            influences,
             Mesh3d(meshes.add(built.mesh)),
             MeshMaterial3d(material),
+            Transform::default(),
+            ChildOf(root),
+        ))
+        .id();
+    // Skinning components only when the mesh was built for them. An
+    // unrigged puppet renders as the flat picture it is, which is what makes
+    // an imported image visible before its first bone exists.
+    if built.skinned {
+        commands.entity(mesh_entity).insert((
             SkinnedMesh {
                 inverse_bindposes: inv_handle,
                 joints: bones.clone(),
             },
             DynamicSkinnedMeshBounds,
-            Transform::default(),
-            ChildOf(root),
-        ))
-        .id();
+        ));
+    }
 
     index.puppets.insert(
         id,

@@ -233,6 +233,66 @@ fn the_root_sits_at_its_layers_depth() {
     assert!((z - 0.25).abs() < 1e-6, "layer depth is world Z, got {z}");
 }
 
+/// Hiding a layer has to take its puppets off the stage.
+///
+/// The gap this pins: `Layer::visible` was written by the panel, saved to the
+/// file, and read by nothing. The row dimmed, the eye struck through, and the
+/// puppet stayed on the projector — the worst possible failure, because the
+/// operator believes the audience cannot see it.
+#[test]
+fn hiding_a_layer_takes_its_puppets_off_the_stage() {
+    let mut app = app_with(document());
+    push(&mut app, DocChange::PuppetAdded(PUPPET));
+    app.update();
+
+    let visibility = |app: &mut App| {
+        *app.world_mut()
+            .query_filtered::<&Visibility, With<PuppetRoot>>()
+            .iter(app.world())
+            .next()
+            .expect("a root")
+    };
+    assert_eq!(visibility(&mut app), Visibility::Inherited);
+
+    let layer = *app
+        .world()
+        .resource::<DocumentRes>()
+        .0
+        .layers
+        .first()
+        .unwrap();
+    app.world_mut()
+        .resource_mut::<DocumentRes>()
+        .0
+        .layer_data
+        .get_mut(&layer)
+        .unwrap()
+        .visible = false;
+    push(&mut app, DocChange::LayerPropsChanged(layer));
+    app.update();
+
+    assert_eq!(
+        visibility(&mut app),
+        Visibility::Hidden,
+        "the puppet is still being drawn after its layer was hidden"
+    );
+
+    app.world_mut()
+        .resource_mut::<DocumentRes>()
+        .0
+        .layer_data
+        .get_mut(&layer)
+        .unwrap()
+        .visible = true;
+    push(&mut app, DocChange::LayerPropsChanged(layer));
+    app.update();
+    assert_eq!(
+        visibility(&mut app),
+        Visibility::Inherited,
+        "and showing it again brings it back"
+    );
+}
+
 // ── the distinction that costs frames ──────────────────────────────────
 
 #[test]
@@ -320,9 +380,214 @@ fn a_puppet_added_and_removed_in_the_same_frame_leaves_nothing() {
     assert_eq!(app.world().resource::<EntityIndex>().entity_count(), 0);
 }
 
+/// Changing gravity must reach the springs, not just the file.
+///
+/// The bug this pins: solver settings are compiled into `CompiledRig`, and
+/// `SolverConfigChanged` used to fall into the "not per-puppet" arm and do
+/// nothing. Gravity was editable, saved, shown in the panel — and read by
+/// nothing after startup.
 #[test]
-fn an_empty_change_list_does_nothing_at_all() {
+fn a_solver_change_recompiles_every_rig() {
     let mut app = app_with(document());
     app.update();
+
+    let before = app
+        .world_mut()
+        .query::<&CompiledRigRef>()
+        .iter(app.world())
+        .next()
+        .map(|r| std::sync::Arc::as_ptr(&r.0))
+        .expect("a rig");
+
+    app.world_mut()
+        .resource_mut::<DocumentRes>()
+        .0
+        .solver
+        .gravity = Vec2::new(0.0, -9.8);
+    push(&mut app, DocChange::SolverConfigChanged);
+    app.update();
+
+    let after = app
+        .world_mut()
+        .query::<&CompiledRigRef>()
+        .iter(app.world())
+        .next()
+        .map(|r| std::sync::Arc::as_ptr(&r.0))
+        .expect("a rig");
+
+    assert_ne!(
+        before, after,
+        "the rig must be recompiled, or the new gravity never reaches the solver"
+    );
+}
+
+#[test]
+fn an_empty_change_list_does_nothing_at_all() {
+    // An *empty document*, because a document holding a puppet is not an
+    // empty change list any more: the plugin announces what it was handed.
+    let mut app = app_with(Project::new("Nothing In It"));
+    app.update();
     assert_eq!(counts(&mut app), (0, 0, 0));
+}
+
+/// Opening a project must put it on stage without anyone asking.
+///
+/// The bug this pins: every puppet in a document loaded from disk was
+/// described to the layer list and to nothing else, so a saved show reopened
+/// as an empty stage — no mesh, no gizmos, no projector image, no error.
+#[test]
+fn a_document_that_arrives_whole_is_projected_without_being_asked() {
+    let mut app = app_with(document());
+    app.update();
+
+    assert_eq!(counts(&mut app), (1, 1, 2));
+    assert_eq!(
+        app.world().resource::<EntityIndex>().puppets.len(),
+        1,
+        "the index describes the puppet the document arrived holding"
+    );
+}
+
+// ── the sequencer actually drives the puppet ───────────────────────────
+
+/// **Poses authored in EDIT must play in PERFORM.**
+///
+/// The whole instrument rests on this: a step holds a pose, the transport
+/// walks the steps, and the targets follow. If this does not move, nothing
+/// the operator authored is ever heard.
+#[test]
+fn a_running_sequencer_drives_the_targets_toward_each_step() {
+    use animus_runtime::{JointTargets, Sequencer};
+
+    let mut app = app_with(document());
+    app.init_resource::<JointTargets>()
+        .init_resource::<animus_runtime::HeldJoint>()
+        .add_plugins(animus_runtime::SequencerPlugin);
+    push(&mut app, DocChange::PuppetAdded(PUPPET));
+    app.update();
+
+    // Two very different poses, two steps apart.
+    let joint = {
+        let world = app.world_mut();
+        let rig = world
+            .query::<&animus_runtime::CompiledRigRef>()
+            .iter(world)
+            .next()
+            .expect("a rig")
+            .0
+            .clone();
+        rig.joint_id(0).expect("a joint")
+    };
+
+    {
+        let mut seq = app.world_mut().resource_mut::<Sequencer>();
+        seq.set_len(4);
+        seq.set_pose(0, vec![(PUPPET, joint, Vec2::new(0.0, 0.0))]);
+        seq.set_pose(2, vec![(PUPPET, joint, Vec2::new(500.0, 0.0))]);
+        // Fast steps and a real sleep below: a headless `app.update()` loop
+        // has microsecond frames, so wall-clock time is what the transport
+        // actually reads.
+        seq.bpm = 6000.0; // 10ms per step
+        seq.running = true;
+    }
+
+    let mut seen: Vec<Vec2> = Vec::new();
+    for _ in 0..120 {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        app.update();
+        if let Some(v) = app
+            .world()
+            .resource::<JointTargets>()
+            .0
+            .get(&(PUPPET, joint))
+        {
+            seen.push(*v);
+        }
+    }
+
+    assert!(
+        !seen.is_empty(),
+        "the sequencer never wrote a target: nothing the operator posed can play"
+    );
+    let spread = seen.iter().map(|v| v.x).fold(f32::NEG_INFINITY, f32::max)
+        - seen.iter().map(|v| v.x).fold(f32::INFINITY, f32::min);
+    assert!(
+        spread > 100.0,
+        "the target barely moved ({spread:.1}px): the steps are not being played"
+    );
+}
+
+/// **Live recording overdubs; it does not overwrite.**
+///
+/// Arming used to write the whole body into every step it crossed, which
+/// pinned every joint the hand was not touching to wherever it happened to
+/// be. The next step then recorded that same frozen body, and the one after
+/// that — so across a bar the only thing that ever differed was the limb
+/// still in the hand. That is the "only the last change gets saved" an
+/// operator sees, and it is what this test exists to keep out.
+#[test]
+fn arming_records_the_played_joint_and_leaves_the_rest_of_the_step_alone() {
+    use animus_runtime::{HeldJoint, JointTargets, Sequencer};
+
+    let mut app = app_with(document());
+    app.init_resource::<JointTargets>()
+        .init_resource::<HeldJoint>()
+        .add_plugins(animus_runtime::SequencerPlugin);
+    push(&mut app, DocChange::PuppetAdded(PUPPET));
+    app.update();
+
+    let (played, untouched) = {
+        let world = app.world_mut();
+        let rig = world
+            .query::<&animus_runtime::CompiledRigRef>()
+            .iter(world)
+            .next()
+            .expect("a rig")
+            .0
+            .clone();
+        (rig.joint_id(0).expect("a joint"), rig.joint_id(1).unwrap())
+    };
+
+    // A step the operator authored earlier, holding a joint they are about
+    // to leave alone.
+    let authored = Vec2::new(-300.0, 44.0);
+    {
+        let mut seq = app.world_mut().resource_mut::<Sequencer>();
+        seq.set_len(4);
+        for step in 0..4 {
+            seq.set_pose(step, vec![(PUPPET, untouched, authored)]);
+        }
+        seq.bpm = 6000.0;
+        seq.running = true;
+        seq.armed = true;
+    }
+    // The hand is on one joint, and only that joint may be recorded.
+    app.world_mut().resource_mut::<HeldJoint>().0 = Some((PUPPET, played));
+
+    for _ in 0..120 {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        app.update();
+    }
+
+    let seq = app.world().resource::<Sequencer>();
+    for step in 0..4 {
+        let pose = seq
+            .pose(step)
+            .unwrap_or_else(|| panic!("step {step} empty"));
+        let kept = pose
+            .iter()
+            .find(|(_, j, _)| *j == untouched)
+            .map(|(_, _, v)| *v);
+        assert_eq!(
+            kept,
+            Some(authored),
+            "step {step}: recording overwrote a joint the hand never touched"
+        );
+    }
+    assert!(
+        (0..4).any(|s| seq
+            .pose(s)
+            .is_some_and(|p| p.iter().any(|(_, j, _)| *j == played))),
+        "the joint the operator was actually holding was never recorded"
+    );
 }

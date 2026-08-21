@@ -55,3 +55,18 @@ pub struct LayerOf(pub LayerId);
 /// component is what makes it greppable.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct EditorOnly;
+
+/// Per-vertex bone influences, kept on the CPU beside the GPU mesh.
+///
+/// The mesh asset itself is `RENDER_WORLD` only, so nothing can read the
+/// weights back once uploaded — but the editor needs them to skin its
+/// wireframe the same way the GPU skins the artwork. Without them the
+/// wireframe can only be drawn at the bind pose, which puts a second,
+/// stationary puppet on screen the moment anything moves.
+#[derive(Component, Debug, Clone)]
+pub struct MeshInfluences {
+    /// Up to four bone indices per vertex, in `CompiledRig` bone order.
+    pub joint_index: Vec<[u16; 4]>,
+    /// The weight for each corresponding entry. Sums to 1.0 per vertex.
+    pub joint_weight: Vec<[f32; 4]>,
+}

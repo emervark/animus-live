@@ -24,8 +24,16 @@ pub struct CompiledRig {
     pub(crate) length_mul: Vec<f32>,
     pub(crate) gravity: Vec2,
     pub(crate) damping: f32,
+    pub(crate) rest_pull: f32,
     pub(crate) iterations: u32,
     joint_index: HashMap<JointId, u32>,
+    /// The same mapping the other way, in dense order.
+    ///
+    /// Kept rather than derived, because every consumer of a dense index
+    /// eventually needs to name the joint again — a captured pose, a
+    /// selection, a binding — and reconstructing the id by scanning the map
+    /// is both slower and a second place for the two orders to disagree.
+    joint_ids: Vec<JointId>,
     /// `BoneId` -> dense index into `bone_a`/`bone_b`/`rest_length`/etc.
     ///
     /// `BoneId`s are allocated from the project-wide `IdAlloc` sequence
@@ -47,12 +55,14 @@ impl CompiledRig {
         let mut inv_mass = Vec::with_capacity(skel.joints.len());
         let mut pinned = Vec::with_capacity(skel.joints.len());
         let mut joint_index = HashMap::with_capacity(skel.joints.len());
+        let mut joint_ids = Vec::with_capacity(skel.joints.len());
 
         for (idx, (id, joint)) in skel.joints.iter().enumerate() {
             rest.push(joint.rest);
             inv_mass.push(if joint.pinned { 0.0 } else { joint.inv_mass });
             pinned.push(joint.pinned);
             joint_index.insert(*id, idx as u32);
+            joint_ids.push(*id);
         }
 
         let mut bone_a = Vec::with_capacity(skel.bones.len());
@@ -96,8 +106,10 @@ impl CompiledRig {
             length_mul,
             gravity: cfg.gravity,
             damping: cfg.global_damping,
+            rest_pull: cfg.rest_pull.clamp(0.0, 1.0),
             iterations: cfg.iterations,
             joint_index,
+            joint_ids,
             bone_index,
         }
     }
@@ -105,6 +117,11 @@ impl CompiledRig {
     /// Dense index of `id`, if it exists in this compiled rig.
     pub fn joint_index(&self, id: JointId) -> Option<u32> {
         self.joint_index.get(&id).copied()
+    }
+
+    /// The joint at a dense index. The inverse of [`Self::joint_index`].
+    pub fn joint_id(&self, dense: usize) -> Option<JointId> {
+        self.joint_ids.get(dense).copied()
     }
 
     /// How many bones the dense arrays hold. This is the length the GPU
@@ -147,7 +164,8 @@ impl CompiledRig {
     }
 
     /// Number of joints in this rig.
-    pub(crate) fn joint_count(&self) -> usize {
+    /// How many joints the dense arrays hold.
+    pub fn joint_count(&self) -> usize {
         self.rest.len()
     }
 }

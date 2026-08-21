@@ -9,8 +9,13 @@ use bevy::prelude::*;
 use glam::Vec2;
 
 /// Zoom limits, in the projection's own units.
-pub const MIN_SCALE: f32 = 0.02;
-pub const MAX_SCALE: f32 = 40.0;
+///
+/// Wide on purpose. Rigging a 2160px drawing means dropping a joint on a
+/// knuckle, and a floor of 0.02 stopped the zoom while the hand was still a
+/// smudge. The ceiling is generous for the opposite reason: composing a stage
+/// means seeing the whole output frame with the puppet small inside it.
+pub const MIN_SCALE: f32 = 0.0005;
+pub const MAX_SCALE: f32 = 400.0;
 
 /// Image pixel → world position.
 pub fn pixel_to_world(camera: &Camera, transform: &GlobalTransform, pixel: Vec2) -> Option<Vec2> {
@@ -81,6 +86,48 @@ pub fn zoom_to_cursor(
         }
         let _ = ortho;
     }
+}
+
+/// Frame a world-space box in the viewport.
+///
+/// Returns the new projection scale and the position to centre on, or `None`
+/// if there is nothing to frame or nothing to frame it in.
+///
+/// **Derived from the measured `world_per_px` rather than from `scale`
+/// directly**, for the same reason [`world_per_pixel`] exists: what the
+/// number in `OrthographicProjection::scale` *means* depends on the active
+/// `ScalingMode`, so the only safe way to use it is as a ratio against a
+/// scale whose on-screen size has actually been measured. Every "fit" that
+/// computes an absolute scale from a viewport height is one `ScalingMode`
+/// change away from being wrong by a factor nobody can explain.
+pub fn fit_to_bounds(
+    current_scale: f32,
+    world_per_px: f32,
+    viewport_px: Vec2,
+    min: Vec2,
+    max: Vec2,
+) -> Option<(f32, Vec2)> {
+    /// A tenth of the frame as breathing room on each axis. A puppet touching
+    /// all four edges reads as cropped even when it is whole.
+    const MARGIN: f32 = 1.12;
+
+    let size = max - min;
+    if !(size.x.is_finite() && size.y.is_finite())
+        || size.x <= 0.0
+        || size.y <= 0.0
+        || world_per_px <= 0.0
+        || viewport_px.x <= 0.0
+        || viewport_px.y <= 0.0
+    {
+        return None;
+    }
+
+    // How much world the viewport shows at the scale we are at now.
+    let visible = viewport_px * world_per_px;
+    // The larger ratio is the binding axis: fit that and the other fits too.
+    let factor = (size.x * MARGIN / visible.x).max(size.y * MARGIN / visible.y);
+    let scale = (current_scale * factor).clamp(MIN_SCALE, MAX_SCALE);
+    Some((scale, (min + max) * 0.5))
 }
 
 #[cfg(test)]
@@ -186,5 +233,67 @@ mod tests {
         let before = t.translation;
         zoom_to_cursor(&cam, &gt, &mut proj, &mut t, Vec2::new(10.0, 10.0), 0.0);
         assert_eq!(t.translation, before);
+    }
+
+    #[test]
+    fn fitting_a_box_makes_it_fill_the_frame_on_its_binding_axis() {
+        // A 10x2 world box in a 400x400px viewport showing 0.05 world/px:
+        // 20x20 world visible now. Width binds.
+        let (scale, centre) = fit_to_bounds(
+            1.0,
+            0.05,
+            Vec2::splat(400.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(10.0, 2.0),
+        )
+        .expect("a real box in a real viewport is fittable");
+        assert_eq!(centre, Vec2::new(5.0, 1.0), "centred on the box");
+        // 10 wide * 1.12 margin / 20 visible = 0.56.
+        assert!((scale - 0.56).abs() < 1e-5, "scale was {scale}");
+    }
+
+    #[test]
+    fn a_tall_box_binds_on_height_instead() {
+        let (scale, _) = fit_to_bounds(
+            1.0,
+            0.05,
+            Vec2::splat(400.0),
+            Vec2::ZERO,
+            Vec2::new(2.0, 10.0),
+        )
+        .unwrap();
+        assert!((scale - 0.56).abs() < 1e-5, "scale was {scale}");
+    }
+
+    #[test]
+    fn fit_refuses_the_degenerate_cases_rather_than_returning_a_nan() {
+        // Every one of these has bitten this codebase in some other form: an
+        // empty document, a viewport that has not been sized yet, and a
+        // camera whose scale has not been measured.
+        assert!(fit_to_bounds(1.0, 0.05, Vec2::splat(400.0), Vec2::ZERO, Vec2::ZERO).is_none());
+        assert!(fit_to_bounds(1.0, 0.05, Vec2::ZERO, Vec2::ZERO, Vec2::ONE).is_none());
+        assert!(fit_to_bounds(1.0, 0.0, Vec2::splat(400.0), Vec2::ZERO, Vec2::ONE).is_none());
+        assert!(
+            fit_to_bounds(
+                1.0,
+                0.05,
+                Vec2::splat(400.0),
+                Vec2::ZERO,
+                Vec2::splat(f32::NAN)
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn fit_stays_inside_the_zoom_limits() {
+        // A single joint at one point is a zero-size box, but a puppet one
+        // millimetre across is not — and fitting it must not zoom to infinity.
+        let (scale, _) =
+            fit_to_bounds(1.0, 0.05, Vec2::splat(400.0), Vec2::ZERO, Vec2::splat(1e-6)).unwrap();
+        assert!(
+            (MIN_SCALE..=MAX_SCALE).contains(&scale),
+            "scale was {scale}"
+        );
     }
 }

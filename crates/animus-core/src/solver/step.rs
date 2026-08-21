@@ -37,7 +37,26 @@ pub fn step(rig: &CompiledRig, st: &mut SolverState, dt: f32) -> StepOutcome {
         }
     }
 
-    // 3. Gauss-Seidel relaxation. Bone order is stable by construction.
+    // 3. Pull toward rest. The zero point, and the reason a released limb
+    //    comes home rather than staying where the hand left it.
+    //
+    //    Applied to the position and *not* to `prev`, so the difference
+    //    between them — Verlet's velocity — grows as the joint returns. The
+    //    limb therefore accelerates home and overshoots slightly before
+    //    damping settles it, which is what makes the return read as a swing
+    //    rather than a slide. A joint being driven is skipped: the hand and
+    //    the clip outrank rest while they hold it.
+    if rig.rest_pull > 0.0 {
+        for i in 0..n {
+            if rig.pinned[i] || rig.inv_mass[i] == 0.0 || st.target[i].is_some() {
+                continue;
+            }
+            let home = (rig.rest[i] - st.pos[i]) * rig.rest_pull;
+            st.pos[i] += home;
+        }
+    }
+
+    // 4. Gauss-Seidel relaxation. Bone order is stable by construction.
     //    Incomplete convergence at these iteration counts is the organic
     //    feel — do NOT raise iterations to "fix" softness.
     for _ in 0..rig.iterations {
@@ -70,7 +89,7 @@ pub fn step(rig: &CompiledRig, st: &mut SolverState, dt: f32) -> StepOutcome {
         }
     }
 
-    // 4. Guard. A single non-finite value resets THIS puppet only.
+    // 5. Guard. A single non-finite value resets THIS puppet only.
     if !all_finite(&st.pos) {
         st.reset_to_rest(rig);
         return StepOutcome::ResetDueToNonFinite;
@@ -129,9 +148,74 @@ mod tests {
         let cfg = SolverConfig {
             gravity: Vec2::ZERO,
             global_damping: 1.0,
+            // The rig these tests measure is a bone and nothing else. The
+            // pull toward rest is a second force on the same joints, and a
+            // test of stiffness that also contains it measures neither.
+            // `returning_to_rest_is_what_a_release_looks_like` covers it.
+            rest_pull: 0.0,
             ..Default::default()
         };
         (skel, cfg)
+    }
+
+    /// Letting go brings the limb home. This is the whole model.
+    ///
+    /// Rest is the zero point: edit mode authors it, live mode departs from
+    /// it, and a release returns to it. Before the pull existed, a joint
+    /// stayed wherever the hand dropped it — the puppet held every pose it
+    /// was ever put in, no gesture ever "played back", and a recording of
+    /// pulls had nothing to return from.
+    #[test]
+    fn returning_to_rest_is_what_a_release_looks_like() {
+        let (skel, mut cfg) = two_joint_rig(0.9);
+        cfg.rest_pull = SolverConfig::default().rest_pull;
+        let rig = CompiledRig::build(&skel, &cfg);
+        let mut st = SolverState::rest(&rig);
+        let rest_tip = st.positions()[1];
+
+        // A hand pulls the tip aside and holds it there.
+        let held = rest_tip + Vec2::new(0.0, 60.0);
+        st.set_target(1, held);
+        for _ in 0..60 {
+            step(&rig, &mut st, 1.0 / 120.0);
+        }
+        assert_relative_eq!(st.positions()[1].y, held.y, epsilon = 1e-3);
+
+        // The hand lets go.
+        st.clear_all_targets();
+        for _ in 0..240 {
+            step(&rig, &mut st, 1.0 / 120.0);
+        }
+
+        let settled = st.positions()[1];
+        assert!(
+            (settled - rest_tip).length() < 2.0,
+            "a released joint must come home, ended {settled:?} against rest {rest_tip:?}"
+        );
+    }
+
+    /// And the old behaviour stays reachable, because a rag doll that keeps
+    /// its shape is a legitimate puppet.
+    #[test]
+    fn a_zero_pull_leaves_the_pose_where_it_was_dropped() {
+        let (skel, cfg) = two_joint_rig(0.9); // rest_pull: 0.0
+        let rig = CompiledRig::build(&skel, &cfg);
+        let mut st = SolverState::rest(&rig);
+        let rest_tip = st.positions()[1];
+
+        st.set_target(1, rest_tip + Vec2::new(0.0, 60.0));
+        for _ in 0..60 {
+            step(&rig, &mut st, 1.0 / 120.0);
+        }
+        st.clear_all_targets();
+        for _ in 0..240 {
+            step(&rig, &mut st, 1.0 / 120.0);
+        }
+
+        assert!(
+            (st.positions()[1] - rest_tip).length() > 20.0,
+            "with no pull toward rest the limb stays where it was left"
+        );
     }
 
     #[test]

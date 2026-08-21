@@ -37,6 +37,21 @@ impl MonitorDesc {
             if self.is_primary { " (primary)" } else { "" }
         )
     }
+
+    /// The display's name alone, short enough for a chip.
+    ///
+    /// Monitor names arrive from the window server and can be anything from
+    /// `DISPLAY2` to a full EDID model string, so this caps the length rather
+    /// than trusting it: a chip that grows with the hardware is a chip that
+    /// pushes the rest of the title bar off the row on someone else's laptop.
+    pub fn short_name(&self) -> String {
+        const MAX: usize = 18;
+        let name = self.name.trim();
+        if name.chars().count() <= MAX {
+            return name.to_string();
+        }
+        name.chars().take(MAX - 1).collect::<String>() + "…"
+    }
 }
 
 /// Which monitor the output window should open on.

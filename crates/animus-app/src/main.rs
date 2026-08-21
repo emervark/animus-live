@@ -9,7 +9,7 @@ mod cli;
 
 use animus_editor::{EditorPlugin, ProjectRoot};
 use animus_output::{OutputConfig, OutputPlugin};
-use animus_runtime::{RuntimePlugin, SolverPlugin};
+use animus_runtime::{RuntimePlugin, SequencerPlugin, SolverPlugin};
 use bevy::prelude::*;
 use bevy::window::PresentMode;
 
@@ -78,13 +78,20 @@ fn main() {
     )
     .add_plugins(RuntimePlugin::new(project))
     .add_plugins(SolverPlugin)
+    .add_plugins(SequencerPlugin)
     .add_plugins(EditorPlugin)
     .add_plugins(OutputPlugin)
     .insert_resource(ProjectRoot(root))
+    // A project opened by name has a location the operator chose; an untitled
+    // one only has a placeholder, so Save must ask before writing anywhere.
+    .insert_resource(animus_editor::files::ProjectSaved(cli.project.is_some()))
     .insert_resource(OutputConfig {
         enabled: true,
         monitor_override: cli.output_monitor,
         vsync: !cli.no_vsync,
+        // Undecided at startup: the hardware answers, and the operator can
+        // override it from the Output panel once they see what they got.
+        fullscreen: None,
     })
     .init_resource::<autosave::AutosaveState>()
     .add_systems(Update, autosave::autosave);

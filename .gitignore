@@ -33,3 +33,14 @@ spikes/target/
 # ../animus-demo-files) because their terms do not all permit
 # redistribution. This entry is a guard in case any land here again.
 /demo-files/
+
+# Saved shows. A `.animus` bundle is a *document* — someone's artwork and
+# their rig — and it belongs to whoever made it, not to this repository.
+# Committing one would put an artist's character into the project history,
+# where taking it back out again is far harder than never adding it.
+*.animus/
+
+# Design comps live beside the repo rather than in it: they are bundled
+# exports measured in hundreds of kilobytes and they change on every
+# revision, so the history would be mostly comp.
+/claude design/

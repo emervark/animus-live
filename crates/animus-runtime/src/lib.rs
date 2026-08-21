@@ -10,11 +10,13 @@ pub mod coords;
 pub mod index;
 pub mod plugin;
 pub mod project;
+pub mod sequencer;
 pub mod skinning;
 pub mod solve;
 
 pub use components::{
-    BoneOf, CompiledRigRef, EditorOnly, LayerOf, PuppetMesh, PuppetRoot, PuppetSolver,
+    BoneOf, CompiledRigRef, EditorOnly, LayerOf, MeshInfluences, PuppetMesh, PuppetRoot,
+    PuppetSolver,
 };
 pub use coords::{img_to_world, img_to_world_angle, world_to_img};
 pub use index::{EntityIndex, PuppetEntities};
@@ -23,5 +25,9 @@ pub use project::{
     BuildWarnings, DocRevision, DocumentRes, PendingChangesRes, PuppetTextures, RenderScale,
     puppet_pivot, sync_document,
 };
+pub use sequencer::{
+    Pose, STEP_COUNTS, Sequencer, SequencerPlugin, SequencerSet, capture_from, glide,
+    run_sequencer, smoothstep,
+};
 pub use skinning::{BuildError, SkinnedMeshBuild, build_inverse_bindposes, build_skinned_mesh};
-pub use solve::{JointTargets, SolveSet, SolverPanic, SolverPlugin, WritebackSet};
+pub use solve::{HeldJoint, JointTargets, SolveSet, SolverPanic, SolverPlugin, WritebackSet};

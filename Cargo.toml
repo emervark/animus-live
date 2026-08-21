@@ -17,6 +17,10 @@ rust-version = "1.85"
 # versa, or animus-core will link a second copy of glam.
 glam        = { version = "0.32", features = ["serde"] }
 serde       = { version = "1", features = ["derive"] }
+# Native file dialogs. The blocking API is used on purpose: choosing a file is
+# modal for the operator anyway, and the async variant would need a runtime to
+# do the same thing one frame later.
+rfd         = "0.15"
 serde_json  = { version = "1", features = ["preserve_order"] }
 indexmap    = { version = "2", features = ["serde"] }
 thiserror   = "2"

@@ -74,6 +74,15 @@ impl JointTargets {
     }
 }
 
+/// The joint a hand is holding right now.
+///
+/// Clips skip it. That single rule is what makes grabbing a looping limb
+/// feel like taking it over rather than fighting it: the clip keeps playing,
+/// keeps driving every other joint it owns, and simply stops writing to the
+/// one under the hand until the hand lets go.
+#[derive(Resource, Debug, Default)]
+pub struct HeldJoint(pub Option<(PuppetId, JointId)>);
+
 /// A puppet's state went non-finite and was reset. One puppet, not the show.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct SolverPanic(pub PuppetId);
@@ -188,11 +197,26 @@ pub fn writeback_bones(
         // here rather than to the joints keeps it out of the constraint
         // solve, where it would fight the distance constraint.
         let rest_len = rig.0.rest_length(bone.index as usize);
-        transform.scale = if rest_len > 1e-6 {
-            Vec3::new(dir.length() / rest_len, 1.0, 1.0)
-        } else {
-            Vec3::ONE
-        };
+        transform.scale = Vec3::new(bone_stretch(dir.length(), rest_len, scale.ppu), 1.0, 1.0);
+    }
+}
+
+/// Squash/stretch along a bone's own X, as a ratio of two lengths in the
+/// *same* unit.
+///
+/// The rest length is image pixels — the solver's space — and the live
+/// length is world units. Dividing them directly gives `1/ppu`, which at the
+/// default scale squashed every bone to a hundredth of its length: the
+/// puppet collapsed onto its own skeleton, arms first, and the head and feet
+/// beyond the end joints were pulled in as if cropped. It looked like a
+/// skinning bug and it is a unit bug, so the conversion lives in one named
+/// function rather than inline in the system.
+fn bone_stretch(current_world: f32, rest_image_px: f32, ppu: f32) -> f32 {
+    let rest_world = rest_image_px / ppu;
+    if rest_world > 1e-6 {
+        current_world / rest_world
+    } else {
+        1.0
     }
 }
 
@@ -223,6 +247,7 @@ impl Plugin for SolverPlugin {
             .max(1);
 
         app.init_resource::<JointTargets>()
+            .init_resource::<HeldJoint>()
             .add_message::<SolverPanic>()
             .insert_resource(Time::<Fixed>::from_hz(hz as f64));
 
@@ -253,5 +278,44 @@ impl Plugin for SolverPlugin {
                 .in_set(WritebackSet::Bones)
                 .before(TransformSystems::Propagate),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bone_stretch;
+
+    /// A bone at its rest length is not stretched — whatever the scale.
+    ///
+    /// This is the assertion that was missing. Nothing compared the
+    /// writeback's transform against the bind pose it has to agree with, so a
+    /// rest pose that rendered as a puppet squashed to 1% of itself passed
+    /// every test in the suite.
+    #[test]
+    fn a_bone_at_rest_is_not_stretched_at_any_scale() {
+        for ppu in [1.0, 50.0, 100.0, 512.0] {
+            let rest_px = 413.0;
+            let rest_world = rest_px / ppu;
+            let stretch = bone_stretch(rest_world, rest_px, ppu);
+            assert!(
+                (stretch - 1.0).abs() < 1e-5,
+                "ppu {ppu}: rest length must scale to 1.0, got {stretch}"
+            );
+        }
+    }
+
+    #[test]
+    fn stretching_a_bone_scales_along_its_own_x() {
+        let ppu = 100.0;
+        let rest_px = 200.0;
+        // Pulled to twice its rest length, measured in world units.
+        assert!((bone_stretch(4.0, rest_px, ppu) - 2.0).abs() < 1e-5);
+        // Squashed to half.
+        assert!((bone_stretch(1.0, rest_px, ppu) - 0.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_degenerate_bone_does_not_divide_by_zero() {
+        assert_eq!(bone_stretch(1.0, 0.0, 100.0), 1.0);
     }
 }

@@ -15,11 +15,13 @@
 
 mod attach;
 mod bake;
+mod tree;
 
 pub use attach::auto_attach;
 pub use bake::{
     BakeError, BakedInfluences, MAX_INFLUENCES, UNIFORM_PATH_BONE_LIMIT, bake_influences,
 };
+pub use tree::{RigTree, rig_tree};
 
 #[cfg(test)]
 mod tests {
@@ -164,9 +166,34 @@ mod tests {
         assert_relative_eq!(t.entries[0].weight, 1.0, epsilon = 1e-5);
     }
 
+    /// A vertex out of every bone's reach falls back to the nearest one.
+    ///
+    /// This asserts the opposite of what it used to. The old contract —
+    /// "beyond the radius means no attachment" — is fine as arithmetic and
+    /// wrong as behaviour: GPU skinning multiplies a vertex by the sum of
+    /// its weights, so no bones means multiplied by zero, and the vertex
+    /// collapses onto the puppet's origin dragging a spike of triangles
+    /// with it. A hand-drawn rig leaves stray vertices out of reach all the
+    /// time, and a fingertip that stays with its arm is the only answer
+    /// that is not a hole in the artwork.
     #[test]
-    fn a_vertex_beyond_the_radius_gets_no_attachment() {
+    fn a_vertex_beyond_every_radius_falls_back_to_its_nearest_bone() {
         let (mesh, skel) = one_bone_with_vertices(&[Vec2::new(50.0, 500.0)]);
+        let t = auto_attach(&mesh, &skel);
+
+        assert_eq!(t.entries.len(), 1, "one bone, at full weight");
+        assert_relative_eq!(t.entries[0].weight, 1.0, epsilon = 1e-5);
+        assert_eq!(t.entries[0].vertex, 0);
+    }
+
+    /// The exception, and it is explicit: a bone told to hold nothing holds
+    /// nothing, even for a vertex with nowhere else to go.
+    #[test]
+    fn a_zero_radius_bone_is_not_a_fallback() {
+        let (mesh, mut skel) = one_bone_with_vertices(&[Vec2::new(50.0, 500.0)]);
+        for bone in skel.bones.values_mut() {
+            bone.attach_radius = 0.0;
+        }
         let t = auto_attach(&mesh, &skel);
         assert!(t.entries.is_empty());
     }

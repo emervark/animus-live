@@ -20,12 +20,44 @@ pub struct ViewportInput {
     pub clicked_at: Option<Vec2>,
     /// Where the pointer is, if it is over the viewport.
     pub hover_at: Option<Vec2>,
+    /// Where the pointer is **during a press or drag on this widget**, even
+    /// once it has left the widget's rect.
+    ///
+    /// This, not [`Self::hover_at`], is what a drag must follow. `hover_at`
+    /// is gated on hovering, and a hand dragging a joint routinely leaves
+    /// the rect or stops counting as hovering mid-gesture; the joint then
+    /// sat at wherever it was grabbed and sprang back on release, which is
+    /// exactly the "it only moves a little" that live mode showed.
+    pub interact_at: Option<Vec2>,
+    /// Where the button went **down**, while it is still down.
+    ///
+    /// This is what a grab must be hit-tested against. egui only calls a
+    /// press a drag once it passes a threshold, and by then the pointer has
+    /// moved a few pixels — so testing the grab against the current position
+    /// means a press that landed dead on a joint misses it whenever the hand
+    /// drifted first. That is the whole of "sometimes it selects, sometimes
+    /// it doesn't": a race between the hand and a threshold.
+    pub press_origin: Option<Vec2>,
     /// Left-drag delta, for dragging joints.
     pub drag_left: Option<Vec2>,
+    /// Whether the left button is **held on this widget** right now.
+    ///
+    /// Separate from [`Self::drag_left`] because a delta answers "how far
+    /// did it move this frame" and a gesture needs "is the hand still
+    /// down". A drag driven by the delta ends the moment the hand pauses —
+    /// and at 150fps the hand is stationary in most frames, so a grabbed
+    /// joint was released almost immediately and sprang back. That is the
+    /// whole of "live mode only moves it a little".
+    pub dragging_left: bool,
     /// Middle-drag delta, for panning.
     pub drag_middle: Option<Vec2>,
     /// Scroll for zooming. Positive is zoom in.
     pub scroll: f32,
+    /// Whether Shift is held, which constrains a corner drag to the layer's
+    /// own aspect ratio. Read here rather than from Bevy's keyboard because a
+    /// modifier belongs to the gesture that reads it, and egui already owns
+    /// the keyboard while the pointer is over the viewport.
+    pub shift: bool,
     /// The rect the image occupies, in egui points.
     pub rect: egui::Rect,
     /// Physical pixels per egui point, i.e. the OS display scale.
@@ -38,9 +70,13 @@ impl Default for ViewportInput {
             hovered: false,
             clicked_at: None,
             hover_at: None,
+            interact_at: None,
+            press_origin: None,
             drag_left: None,
+            dragging_left: false,
             drag_middle: None,
             scroll: 0.0,
+            shift: false,
             // `egui::Rect` has no `Default`, and NOTHING is the honest
             // starting value: a viewport that has not been laid out occupies
             // nowhere, and `desired_target_size` clamps it to 1x1 rather
@@ -133,13 +169,29 @@ pub fn viewport_widget(
         0.0
     };
 
+    let interact_at = response
+        .interact_pointer_pos()
+        .map(|p| to_image_pixel(p, rect, ppp));
+
+    // Only while the press that began on this widget is still held, so a
+    // press elsewhere in the dock never reads as a grab in the viewport.
+    let press_origin = response
+        .is_pointer_button_down_on()
+        .then(|| ui.input(|i| i.pointer.press_origin()))
+        .flatten()
+        .map(|p| to_image_pixel(p, rect, ppp));
+
     ViewportInput {
         hovered,
         clicked_at,
         hover_at,
+        interact_at,
+        press_origin,
         drag_left: drag(PointerButton::Primary),
+        dragging_left: response.dragged_by(PointerButton::Primary),
         drag_middle: drag(PointerButton::Middle),
         scroll,
+        shift: ui.input(|i| i.modifiers.shift),
         rect,
         pixels_per_point: ppp,
     }
@@ -219,6 +271,81 @@ mod tests {
         assert!(
             out.clicked_at.is_some(),
             "the viewport must report clicks; it reported {out:?}"
+        );
+    }
+
+    /// A hand that pauses is still holding on.
+    ///
+    /// The bug this pins: the gesture was driven by `drag_left`, a *delta*,
+    /// which is `None` on any frame the pointer did not move. At 150fps most
+    /// frames are stationary, so the state machine saw "no drag" and issued
+    /// a Release — the joint sprang back before it had gone anywhere.
+    #[test]
+    fn a_stationary_frame_mid_drag_is_still_a_drag() {
+        let ctx = egui::Context::default();
+        run_frame(&ctx, 1.0, vec![], Some(egui::pos2(100.0, 100.0)));
+
+        let press = vec![
+            egui::Event::PointerMoved(egui::pos2(100.0, 100.0)),
+            egui::Event::PointerButton {
+                pos: egui::pos2(100.0, 100.0),
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ];
+        run_frame(&ctx, 1.0, press, None);
+        // Move once so egui calls it a drag rather than a press.
+        run_frame(&ctx, 1.0, vec![], Some(egui::pos2(160.0, 140.0)));
+
+        // Now a frame with no pointer event at all: the hand paused.
+        let out = run_frame(&ctx, 1.0, vec![], None);
+        assert!(
+            out.dragging_left,
+            "a held button with no movement this frame is still a drag; got {out:?}"
+        );
+        assert!(
+            out.drag_left.is_none(),
+            "the delta is genuinely zero — which is exactly why it must not              be what the gesture is driven by"
+        );
+    }
+
+    /// A drag must keep reporting a position for the whole gesture.
+    ///
+    /// The bug this pins: the drag followed `hover_at`, which is gated on
+    /// hovering. Mid-gesture the hand leaves the rect — or egui simply stops
+    /// calling it hovered — and the joint then sat where it was grabbed and
+    /// sprang back on release. Live mode looked like it "moves a little and
+    /// gives up", and no downstream maths could have fixed it.
+    #[test]
+    fn a_held_drag_keeps_reporting_the_pointer_after_it_leaves_the_widget() {
+        let ctx = egui::Context::default();
+        run_frame(&ctx, 1.0, vec![], Some(egui::pos2(100.0, 100.0)));
+
+        // Press inside the viewport.
+        let press = vec![
+            egui::Event::PointerMoved(egui::pos2(100.0, 100.0)),
+            egui::Event::PointerButton {
+                pos: egui::pos2(100.0, 100.0),
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ];
+        let out = run_frame(&ctx, 1.0, press, None);
+        assert!(
+            out.interact_at.is_some(),
+            "a press must report where it landed; got {out:?}"
+        );
+
+        // Keep the button down and drag well past the widget's edge.
+        let out = run_frame(&ctx, 1.0, vec![], Some(egui::pos2(760.0, 560.0)));
+        let at = out
+            .interact_at
+            .expect("a held drag must still report a position outside the rect");
+        assert!(
+            at.x > 300.0 && at.y > 200.0,
+            "the reported position must follow the hand, got {at:?}"
         );
     }
 

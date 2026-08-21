@@ -726,3 +726,316 @@ proptest! {
         prop_assert_eq!(snapshot(&p), edited);
     }
 }
+
+// ── layer delete, duplicate and hide ───────────────────────────────────
+
+#[test]
+fn set_layer_visible_inverts() {
+    assert_inverts(Box::new(SetLayerVisible {
+        layer: LAYER,
+        from: true,
+        to: false,
+    }));
+}
+
+#[test]
+fn remove_layer_inverts() {
+    assert_inverts(Box::new(RemoveLayer::new(LAYER)));
+}
+
+/// Duplicate inverts too, but it cannot use `assert_inverts`.
+///
+/// `assert_inverts` compares the whole serialized project, and duplicating
+/// allocates IDs, which moves `Project::next_id`. **That watermark is
+/// deliberately not rolled back.** IDs are never reused: if undo wound it
+/// back, a redo would mint the same IDs a second time, and any command
+/// applied between the undo and the redo would mint one that collides. So
+/// this checks that everything an operator can see is restored, and states
+/// that the watermark is the one thing that is allowed to move.
+#[test]
+fn duplicate_layer_inverts_apart_from_the_id_watermark() {
+    let mut p = fixture();
+    let before = snapshot(&p);
+    let mut stack = UndoStack::new();
+
+    apply_command(&mut p, &mut stack, Box::new(DuplicateLayer::new(LAYER))).expect("apply");
+    assert_ne!(snapshot(&p), before, "applying it changed nothing");
+
+    stack
+        .undo(&mut p)
+        .expect("something to undo")
+        .expect("revert");
+
+    let mut after = snapshot(&p);
+    assert!(
+        p.next_id > 200,
+        "the watermark must move forward, or redo would re-mint the same ids"
+    );
+    after["next_id"] = before["next_id"].clone();
+    assert_eq!(after, before, "everything else came back");
+}
+
+/// A layer owns what is on it.
+///
+/// Leaving the puppets behind would keep them in `Project::puppets` and in the
+/// scene, reachable from no panel — visible on the projector, gone from the
+/// editor, and impossible to select in order to remove.
+#[test]
+fn deleting_a_layer_takes_its_puppets_with_it() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+
+    apply_command(&mut p, &mut stack, Box::new(RemoveLayer::new(LAYER))).expect("apply");
+
+    assert!(p.layer_data.is_empty(), "the layer went");
+    assert!(
+        p.puppets.is_empty(),
+        "and so did the puppet standing on it, or it would be orphaned in the scene"
+    );
+
+    stack
+        .undo(&mut p)
+        .expect("something to undo")
+        .expect("revert");
+    assert!(
+        p.puppets.contains_key(&PUPPET),
+        "undo brings the puppet back"
+    );
+    assert_eq!(p.layer_data[&LAYER].contents, vec![PUPPET]);
+}
+
+/// The copy gets its own identity, and the original keeps everything.
+#[test]
+fn duplicating_a_layer_copies_its_puppets_under_new_ids() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+
+    apply_command(&mut p, &mut stack, Box::new(DuplicateLayer::new(LAYER))).expect("apply");
+
+    assert_eq!(p.layers.len(), 2);
+    assert_eq!(p.layers[0], LAYER, "the original stays where it was");
+    let copy = p.layers[1];
+    assert_ne!(copy, LAYER, "the copy is a different layer");
+    assert_eq!(p.layer_data[&copy].name, "Puppets copy");
+
+    let copied = p.layer_data[&copy].contents.clone();
+    assert_eq!(copied.len(), 1, "the puppet came along");
+    assert_ne!(copied[0], PUPPET, "under its own id");
+    assert!(p.puppets.contains_key(&copied[0]));
+    assert_eq!(
+        p.layer_data[&LAYER].contents,
+        vec![PUPPET],
+        "and the original layer is untouched"
+    );
+}
+
+/// **Redo must not re-mint.**
+///
+/// Bindings, selections and clip targets all refer to puppets by ID. If an
+/// undo-redo cycle handed the copy a fresh identity, every reference the
+/// operator had already made to it would break — silently, and only for the
+/// people who used undo.
+#[test]
+fn redoing_a_duplicate_restores_the_same_identities_it_created() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+
+    apply_command(&mut p, &mut stack, Box::new(DuplicateLayer::new(LAYER))).expect("apply");
+    let first = p.layers[1];
+    let first_puppets = p.layer_data[&first].contents.clone();
+
+    stack
+        .undo(&mut p)
+        .expect("something to undo")
+        .expect("revert");
+    stack
+        .redo(&mut p)
+        .expect("something to redo")
+        .expect("apply");
+
+    assert_eq!(p.layers[1], first, "the copy came back as itself");
+    assert_eq!(
+        p.layer_data[&first].contents, first_puppets,
+        "and so did every puppet on it"
+    );
+}
+
+#[test]
+fn set_stage_canvas_inverts() {
+    assert_inverts(Box::new(SetStageCanvas {
+        from: [1920, 1080],
+        to: [3840, 2160],
+    }));
+}
+
+/// The projector camera divides by the canvas, so a zero on either axis is a
+/// division by zero on the show's own path — refused at the door rather than
+/// found at a venue.
+#[test]
+fn a_stage_can_never_be_zero_on_either_axis() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+    let from = p.stage.canvas;
+    apply_command(
+        &mut p,
+        &mut stack,
+        Box::new(SetStageCanvas { from, to: [0, 0] }),
+    )
+    .expect("apply");
+    assert_eq!(p.stage.canvas, [1, 1]);
+}
+
+// ── forward kinematics ─────────────────────────────────────────────────
+//
+// The fixture's chain is hip → knee → foot, and the rig stores no
+// hierarchy: the direction is derived from the bone graph. These tests
+// pin down the two halves of what "rotate" has to mean — everything below
+// comes along, and nothing above moves.
+
+/// A quarter turn, checked against the geometry rather than against
+/// whatever the implementation happens to produce.
+#[test]
+fn rotating_a_joint_swings_the_limb_below_it() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+
+    apply_command(
+        &mut p,
+        &mut stack,
+        Box::new(RotateJoint {
+            puppet: PUPPET,
+            joint: J_HIP,
+            from: 0.0,
+            to: std::f32::consts::FRAC_PI_2,
+        }),
+    )
+    .expect("apply");
+
+    // hip (50,70) is the pivot; knee sat at (52,84), i.e. +2,+14 from it.
+    // A quarter turn takes (x,y) to (-y,x), so +2,+14 becomes -14,+2.
+    let knee = joint_rest(&p, J_KNEE);
+    assert!(
+        (knee - Vec2::new(36.0, 72.0)).length() < 1e-3,
+        "the knee landed at {knee:?}, not where a quarter turn puts it"
+    );
+    assert_eq!(
+        joint_rest(&p, J_HIP),
+        Vec2::new(50.0, 70.0),
+        "the joint being rotated is the pivot and must not move"
+    );
+}
+
+/// **Rotation runs one way down the chain.** Turning the knee must not
+/// drag the hip, or every limb would move the torso and the rig would be
+/// unposeable.
+#[test]
+fn rotating_a_joint_leaves_what_it_hangs_from_alone() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+    let hip_before = joint_rest(&p, J_HIP);
+
+    apply_command(
+        &mut p,
+        &mut stack,
+        Box::new(RotateJoint {
+            puppet: PUPPET,
+            joint: J_KNEE,
+            from: 0.0,
+            to: 0.7,
+        }),
+    )
+    .expect("apply");
+
+    assert_eq!(
+        joint_rest(&p, J_HIP),
+        hip_before,
+        "the hip followed the knee"
+    );
+    assert_ne!(
+        joint_rest(&p, J_FOOT),
+        Vec2::new(54.0, 96.0),
+        "the foot hangs off the knee and should have swung with it"
+    );
+}
+
+/// Undo puts the limb back.
+///
+/// Compared with a tolerance rather than through `assert_inverts`: a
+/// rotation and its inverse are exact in real arithmetic and off by an ulp
+/// or two in `f32`, and demanding a byte-identical document would be
+/// testing the FPU rather than the command.
+#[test]
+fn a_rotation_undoes_to_where_it_started() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+    let before: Vec<Vec2> = [J_HIP, J_KNEE, J_FOOT]
+        .iter()
+        .map(|j| joint_rest(&p, *j))
+        .collect();
+
+    apply_command(
+        &mut p,
+        &mut stack,
+        Box::new(RotateJoint {
+            puppet: PUPPET,
+            joint: J_HIP,
+            from: 0.0,
+            to: 1.1,
+        }),
+    )
+    .expect("apply");
+    stack
+        .undo(&mut p)
+        .expect("something to undo")
+        .expect("revert");
+
+    for (j, was) in [J_HIP, J_KNEE, J_FOOT].iter().zip(before) {
+        let now = joint_rest(&p, *j);
+        assert!(
+            (now - was).length() < 1e-3,
+            "{j:?} came back to {now:?} instead of {was:?}"
+        );
+    }
+}
+
+/// One drag of the dial is one undo step, and undoing it takes back the
+/// whole turn rather than the last frame of it.
+#[test]
+fn a_rotation_gesture_merges_into_one_undo_step() {
+    let mut p = fixture();
+    let mut stack = UndoStack::new();
+    let knee_before = joint_rest(&p, J_KNEE);
+
+    let mut angle = 0.0;
+    for step in 1..=8 {
+        let to = step as f32 * 0.1;
+        apply_command(
+            &mut p,
+            &mut stack,
+            Box::new(RotateJoint {
+                puppet: PUPPET,
+                joint: J_HIP,
+                from: angle,
+                to,
+            }),
+        )
+        .expect("apply");
+        angle = to;
+    }
+
+    assert_eq!(
+        stack.len(),
+        1,
+        "a single drag left {} undo steps",
+        stack.len()
+    );
+    stack
+        .undo(&mut p)
+        .expect("something to undo")
+        .expect("revert");
+    let knee = joint_rest(&p, J_KNEE);
+    assert!(
+        (knee - knee_before).length() < 1e-3,
+        "one Ctrl+Z left the knee at {knee:?}: the merge took back only part of the turn"
+    );
+}

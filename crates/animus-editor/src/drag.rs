@@ -94,10 +94,16 @@ pub fn step(
     mode: EditMode,
     project: &Project,
     puppet: PuppetId,
+    // Where each joint is *drawn* right now: rest in edit mode, the solver's
+    // live position in live mode. The grab is tested against this and not
+    // against the document, because those two disagree the moment the puppet
+    // moves — and after the first pull it never agrees again.
+    joints: &[(JointId, Vec2)],
+    grab_radius_img: f32,
 ) -> Vec<DragEffect> {
     match (*state, event) {
         (DragState::Idle, DragEvent::Grab(pos)) => {
-            let Some(joint) = rig::joint_at(project, puppet, pos) else {
+            let Some(joint) = rig::joint_at(joints, pos, grab_radius_img) else {
                 return vec![DragEffect::None];
             };
             let Some(from) = joint_rest(project, puppet, joint) else {
@@ -113,8 +119,14 @@ pub fn step(
             match mode {
                 // Grabbing in live mode starts pulling immediately: the
                 // point of live mode is that touching the puppet moves it.
-                EditMode::Live => vec![select, DragEffect::SetTarget { puppet, joint, pos }],
-                EditMode::Edit => vec![select],
+                // Rig authors the rest pose, so a tap only selects. Edit and
+                // Perform both pull the live puppet — the difference between
+                // them is what happens to the pull afterwards, not what the
+                // drag does.
+                EditMode::Rig => vec![select],
+                EditMode::Edit | EditMode::Live => {
+                    vec![select, DragEffect::SetTarget { puppet, joint, pos }]
+                }
             }
         }
 
@@ -127,13 +139,15 @@ pub fn step(
             },
             DragEvent::MoveTo(pos),
         ) => match mode {
-            EditMode::Edit => vec![DragEffect::Command(MoveJointRest {
+            EditMode::Rig => vec![DragEffect::Command(MoveJointRest {
                 puppet,
                 joint,
                 from,
                 to: pos,
             })],
-            EditMode::Live => vec![DragEffect::SetTarget { puppet, joint, pos }],
+            EditMode::Edit | EditMode::Live => {
+                vec![DragEffect::SetTarget { puppet, joint, pos }]
+            }
         },
 
         (
@@ -147,6 +161,12 @@ pub fn step(
         ) => {
             *state = DragState::Idle;
             match mode {
+                EditMode::Rig => vec![DragEffect::EndGesture],
+                // **EDIT keeps the pose.** Letting go there used to clear the
+                // target, and the rest pull walked the limb straight back
+                // home — so the step the operator had just posed was already
+                // wrong by the time they looked at it. In EDIT the pose *is*
+                // the standing instruction.
                 EditMode::Edit => vec![DragEffect::EndGesture],
                 EditMode::Live => vec![DragEffect::ClearTarget { puppet, joint }],
             }
@@ -171,6 +191,16 @@ mod tests {
     };
     use animus_core::ids::{AssetId, LayerId};
     use indexmap::IndexMap;
+
+    /// The radius these tests were written against, back when it was a
+    /// fixed 8 image pixels. Stated once so the gestures below keep meaning
+    /// what they meant when the zoom-dependent radius arrived.
+    const TEST_GRAB_RADIUS: f32 = 8.0;
+
+    /// The fixture's single joint, where it is drawn.
+    fn displayed() -> Vec<(JointId, Vec2)> {
+        vec![(J, Vec2::new(40.0, 40.0))]
+    }
 
     const PUPPET: PuppetId = PuppetId(50);
     const J: JointId = JointId(51);
@@ -228,7 +258,15 @@ mod tests {
         events.push(DragEvent::Release);
 
         for event in events {
-            for effect in step(&mut state, event, mode, p, PUPPET) {
+            for effect in step(
+                &mut state,
+                event,
+                mode,
+                p,
+                PUPPET,
+                &displayed(),
+                TEST_GRAB_RADIUS,
+            ) {
                 match effect {
                     DragEffect::Command(cmd) => {
                         apply_command(p, stack, Box::new(cmd)).unwrap();
@@ -257,7 +295,7 @@ mod tests {
         let path: Vec<Vec2> = (0..30)
             .map(|i| Vec2::new(40.0 + i as f32 * 2.0, 40.0))
             .collect();
-        drag_gesture(&mut p, &mut stack, &mut targets, EditMode::Edit, &path);
+        drag_gesture(&mut p, &mut stack, &mut targets, EditMode::Rig, &path);
 
         match &p.puppets[&PUPPET].kind {
             PuppetKind::Mesh(m) => {
@@ -305,7 +343,7 @@ mod tests {
     #[test]
     fn grabbing_empty_space_does_nothing_in_either_mode() {
         let mut p = project();
-        for mode in [EditMode::Edit, EditMode::Live] {
+        for mode in [EditMode::Rig, EditMode::Edit, EditMode::Live] {
             let mut state = DragState::Idle;
             let effects = step(
                 &mut state,
@@ -313,6 +351,8 @@ mod tests {
                 mode,
                 &p,
                 PUPPET,
+                &displayed(),
+                TEST_GRAB_RADIUS,
             );
             assert_eq!(effects, vec![DragEffect::None]);
             assert_eq!(state, DragState::Idle, "no drag begins on empty space");
@@ -330,6 +370,8 @@ mod tests {
             EditMode::Edit,
             &p,
             PUPPET,
+            &displayed(),
+            TEST_GRAB_RADIUS,
         );
         assert!(effects.contains(&DragEffect::Select {
             puppet: PUPPET,
@@ -350,6 +392,8 @@ mod tests {
             EditMode::Live,
             &p,
             PUPPET,
+            &displayed(),
+            TEST_GRAB_RADIUS,
         );
 
         // The operator flips to Edit while still holding the button; the
@@ -360,6 +404,8 @@ mod tests {
             EditMode::Edit,
             &p,
             PUPPET,
+            &displayed(),
+            TEST_GRAB_RADIUS,
         );
         assert!(
             matches!(effects[0], DragEffect::SetTarget { .. }),
@@ -379,6 +425,8 @@ mod tests {
             EditMode::Edit,
             &p,
             PUPPET,
+            &displayed(),
+            TEST_GRAB_RADIUS,
         );
         assert!(matches!(state, DragState::Dragging { .. }));
 
@@ -388,6 +436,8 @@ mod tests {
             EditMode::Edit,
             &p,
             PUPPET,
+            &displayed(),
+            TEST_GRAB_RADIUS,
         );
         assert_eq!(state, DragState::Idle, "the machine resets");
         assert_eq!(effects, vec![DragEffect::None]);
