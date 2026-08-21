@@ -189,8 +189,13 @@ pub struct TabViewer<'a> {
 
 impl TabViewer<'_> {
     fn viewport(&mut self, ui: &mut egui::Ui) {
+        self.viewport_toolbar(ui);
+        // The strip is a row of its own rather than an overlay: it is text
+        // the operator reads *about* the stage, and text painted on top of a
+        // black canvas competes with the puppet for the same pixels.
+        let strip = theme::FS_TINY + theme::S_MD;
         let available = ui.available_size();
-        let size = egui::vec2(available.x.max(16.0), available.y.max(16.0));
+        let size = egui::vec2(available.x.max(16.0), (available.y - strip).max(16.0));
         let input = viewport_widget(ui, self.viewport_texture, size);
 
         // The empty state carries the first instruction, in the place the
@@ -214,8 +219,90 @@ impl TabViewer<'_> {
         }
 
         self.mode_overlay(ui, input.rect);
-        self.status_strip(ui, input.rect);
+        self.stage_readout(ui, input.rect);
         self.viewport_input = Some(input);
+        self.status_strip(ui);
+    }
+
+    /// The bar over the stage: how it is framed, and what is drawn on it.
+    ///
+    /// Framing on the left, overlays in the middle, what-surface-is-this on
+    /// the right — the comp's order, and the order the questions arrive in.
+    fn viewport_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = theme::S_XS;
+            ui.add_space(theme::S_SM);
+
+            if ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Fit")
+                            .size(theme::FS_SM)
+                            .color(theme::MID),
+                    )
+                    .fill(theme::WELL)
+                    .corner_radius(theme::R_BADGE),
+                )
+                .on_hover_text("Frame everything — F")
+                .clicked()
+            {
+                self.wants_fit = true;
+            }
+
+            if let Some(target) = self.target {
+                // Zoom as a percentage of one image pixel to one screen
+                // pixel, which is the only ratio that means anything while
+                // placing a joint on a knuckle.
+                let percent = if target.world_per_pixel > 0.0 {
+                    100.0 / (target.world_per_pixel * 100.0)
+                } else {
+                    100.0
+                };
+                ui.label(
+                    egui::RichText::new(format!("{percent:.0}%"))
+                        .monospace()
+                        .size(theme::FS_TINY)
+                        .color(theme::DIM),
+                );
+            }
+
+            ui.add_space(theme::S_SM);
+            separator(ui);
+            ui.add_space(theme::S_SM);
+
+            for (i, (name, tip, ready)) in crate::state::Overlays::ALL.iter().enumerate() {
+                let on = *ready && self.state.overlays.get(i);
+                let ink = match (*ready, on) {
+                    (false, _) => theme::DISABLED,
+                    (true, true) => theme::MID,
+                    (true, false) => theme::FAINT,
+                };
+                if crate::widgets::chip(ui, name, on, ink)
+                    .on_hover_text(*tip)
+                    .clicked()
+                    && *ready
+                {
+                    self.state.overlays.toggle(i);
+                }
+            }
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(theme::S_SM);
+                let on = self.state.show_dev_inspector;
+                if crate::widgets::chip(
+                    ui,
+                    "DIAGNOSTICS",
+                    on,
+                    if on { theme::DATA_CYAN } else { theme::FAINT },
+                )
+                .on_hover_text("Show solver and cursor diagnostics under the stage")
+                .clicked()
+                {
+                    self.state.show_dev_inspector = !on;
+                }
+            });
+        });
+        ui.add_space(theme::S_XS);
     }
 
     /// What mode this is, said twice on the stage itself.
@@ -315,28 +402,108 @@ impl TabViewer<'_> {
     /// World-per-pixel is here because every offset in this editor is quoted
     /// in pixels, and without the conversion on screen a coordinate bug is a
     /// guessing game. M0-2 spent three rounds on one for want of this line.
-    fn status_strip(&self, ui: &mut egui::Ui, rect: egui::Rect) {
+    /// The stage's own caption, inside the canvas at the bottom left.
+    ///
+    /// The output size first, because "what will the audience see" is the
+    /// question a stage answers. World-per-pixel follows because every
+    /// offset in this editor is quoted in pixels, and without the conversion
+    /// on screen a coordinate bug is a guessing game — M0-2 spent three
+    /// rounds on one for want of this line.
+    fn stage_readout(&self, ui: &mut egui::Ui, rect: egui::Rect) {
         let Some(target) = self.target else { return };
-        let strip = egui::Rect::from_min_max(egui::pos2(rect.min.x, rect.max.y - 20.0), rect.max);
-        ui.painter().rect_filled(strip, 0.0, theme::STATUS_BG);
+        let canvas = self.doc.stage.canvas;
+        let p = ui.painter();
 
-        let mut text = format!(
-            "1 px = {:.4} world    {} x {}",
-            target.world_per_pixel, target.size.x, target.size.y
+        let head = format!(
+            "STAGE {} \u{00d7} {}    1 px = {:.4} world",
+            canvas[0], canvas[1], target.world_per_pixel
         );
-        if let Some(c) = target.cursor_world {
-            text.push_str(&format!("    cursor {:.2}, {:.2}", c.x, c.y));
-        }
-        if let Some(c) = target.last_click_world {
-            text.push_str(&format!("    click {:.2}, {:.2}", c.x, c.y));
-        }
-        ui.painter().text(
-            strip.left_center() + egui::vec2(theme::S_SM, 0.0),
-            egui::Align2::LEFT_CENTER,
-            text,
+        p.text(
+            egui::pos2(rect.min.x + theme::S_MD, rect.max.y - theme::S_MD),
+            egui::Align2::LEFT_BOTTOM,
+            head,
             egui::FontId::monospace(theme::FS_TINY),
             theme::DIM,
         );
+
+        // Cursor and click coordinates are diagnostics, and stay behind the
+        // toggle that says so.
+        if self.state.show_dev_inspector {
+            let mut diag = format!("target {} \u{00d7} {}", target.size.x, target.size.y);
+            if let Some(c) = target.cursor_world {
+                diag.push_str(&format!("    cursor {:.2}, {:.2}", c.x, c.y));
+            }
+            if let Some(c) = target.last_click_world {
+                diag.push_str(&format!("    click {:.2}, {:.2}", c.x, c.y));
+            }
+            p.text(
+                egui::pos2(
+                    rect.min.x + theme::S_MD,
+                    rect.max.y - theme::S_MD - theme::FS_TINY - theme::S_XS,
+                ),
+                egui::Align2::LEFT_BOTTOM,
+                diag,
+                egui::FontId::monospace(theme::FS_TINY),
+                theme::HINT,
+            );
+        }
+    }
+
+    /// One line under the stage: everything true about the show right now.
+    ///
+    /// Six facts an operator would otherwise have to hunt for in six places.
+    /// Each is a label and a value, and the value takes the Signal Rule's
+    /// colour when it is a state worth noticing.
+    fn status_strip(&self, ui: &mut egui::Ui) {
+        let height = theme::FS_TINY + theme::S_MD;
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::hover(),
+        );
+        let p = ui.painter();
+        p.rect_filled(rect, 0.0, theme::STATUS_BG);
+
+        let selection = match self.state.selection {
+            Selection::None => "none".to_string(),
+            Selection::Layer(_) => "layer".to_string(),
+            Selection::Puppet(_) => "puppet".to_string(),
+            Selection::Joint(_, j) => format!("joint {}", j.0),
+            Selection::Bone(_, b) => format!("bone {}", b.0),
+        };
+        let (solver, solver_ink) = if self.doc.solver.enabled {
+            (format!("{} Hz", self.doc.solver.hz), theme::GO_GREEN)
+        } else {
+            ("paused".to_string(), theme::CAUTION_AMBER)
+        };
+        let (output, output_ink) = match &self.output {
+            Some(o) => (o.short.clone(), theme::LIVE_CORAL),
+            None => ("off".to_string(), theme::DIM),
+        };
+
+        let mut x = rect.min.x + theme::S_MD;
+        for (name, value, ink) in [
+            ("selection", selection.as_str(), theme::MID),
+            ("tool", self.state.tool.label(), theme::MID),
+            ("solver", solver.as_str(), solver_ink),
+            ("output", output.as_str(), output_ink),
+        ] {
+            let ng = p.layout_no_wrap(
+                name.to_string(),
+                egui::FontId::monospace(theme::FS_TINY),
+                theme::FAINT,
+            );
+            let vg = p.layout_no_wrap(
+                value.to_string(),
+                egui::FontId::monospace(theme::FS_TINY),
+                ink,
+            );
+            let y = rect.center().y - ng.size().y * 0.5;
+            let nw = ng.size().x;
+            let vw = vg.size().x;
+            p.galley(egui::pos2(x, y), ng, theme::FAINT);
+            p.galley(egui::pos2(x + nw + theme::S_2XS, y), vg, ink);
+            x += nw + vw + theme::S_2XS + theme::S_LG;
+        }
     }
 
     /// SCENE: what is in the show, and what its skeleton looks like.

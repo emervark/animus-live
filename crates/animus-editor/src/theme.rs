@@ -216,6 +216,9 @@ pub mod gizmo {
     /// The stage edge. Furniture, so the very bottom of the ink ramp: it has
     /// to be findable when looked for and invisible when not.
     pub const STAGE_FRAME: Color32 = Color32::from_rgb(0x3A, 0x40, 0x49);
+    /// The title-safe inset, a touch brighter than the frame it sits inside
+    /// so the two do not read as one thick dashed line.
+    pub const SAFE_FRAME: Color32 = Color32::from_rgb(0x59, 0x61, 0x6C);
 
     /// A joint bound to a live channel. Cyan because it *is* I/O — the same
     /// meaning the colour carries everywhere else.

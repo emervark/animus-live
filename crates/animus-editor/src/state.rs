@@ -12,6 +12,81 @@ use animus_core::ids::{BoneId, JointId, LayerId, PuppetId};
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// What the viewport draws over the artwork.
+///
+/// **Toggles, not a mode.** An operator rigging a hand wants the mesh and
+/// the joints and nothing else; one framing a shot wants the safe area and
+/// none of the rig. Bundling these into presets would mean the one
+/// combination someone needs is always the one that does not exist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Overlays {
+    pub mesh: bool,
+    pub bones: bool,
+    pub joints: bool,
+    /// The output frame, dashed: what the audience will actually see.
+    pub safe: bool,
+    /// The camera rectangle, for when the stage is larger than the frame.
+    pub camera: bool,
+}
+
+impl Default for Overlays {
+    fn default() -> Self {
+        // The rig on, the framing guides off: the first thing anyone does
+        // with this tool is build a skeleton, and the guides are for later.
+        Self {
+            mesh: true,
+            bones: true,
+            joints: true,
+            safe: false,
+            camera: false,
+        }
+    }
+}
+
+impl Overlays {
+    /// Name, tooltip, and whether there is anything behind it yet.
+    ///
+    /// `CAMERA` is listed and disabled on purpose. There is no framing
+    /// camera in the document — the viewport camera is a view, not a shot —
+    /// so a toggle here would draw a rectangle that means nothing. Reserving
+    /// the space is honest; drawing the rectangle would not be.
+    pub const ALL: [(&'static str, &'static str, bool); 5] = [
+        ("MESH", "Show the triangle mesh over the artwork", true),
+        ("BONES", "Show the bones connecting joints", true),
+        ("JOINTS", "Show the joints themselves", true),
+        (
+            "SAFE",
+            "Show the title-safe inset: what survives a projector's overscan",
+            true,
+        ),
+        (
+            "CAMERA",
+            "A framing camera would go here. The document has no such camera yet.",
+            false,
+        ),
+    ];
+
+    pub fn get(&self, i: usize) -> bool {
+        match i {
+            0 => self.mesh,
+            1 => self.bones,
+            2 => self.joints,
+            3 => self.safe,
+            _ => self.camera,
+        }
+    }
+
+    pub fn toggle(&mut self, i: usize) {
+        match i {
+            0 => self.mesh = !self.mesh,
+            1 => self.bones = !self.bones,
+            2 => self.joints = !self.joints,
+            3 => self.safe = !self.safe,
+            _ => self.camera = !self.camera,
+        }
+    }
+}
+
 /// The left sidebar's three tabs: what is in the show, what it is made
 /// from, and what acts on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
@@ -154,6 +229,8 @@ pub struct EditorState {
     /// The selected joint's live rotation in radians, projected in the same
     /// way and for the same reason as [`Self::live_offset`].
     pub live_rotation: f32,
+    /// What the viewport draws over the artwork.
+    pub overlays: Overlays,
     /// Whether the output settings are showing.
     ///
     /// Opened from the title bar's output chip rather than living in a panel:
@@ -178,6 +255,7 @@ impl Default for EditorState {
             clips_collapsed: false,
             live_offset: None,
             live_rotation: 0.0,
+            overlays: Overlays::default(),
             output_menu_open: false,
         }
     }

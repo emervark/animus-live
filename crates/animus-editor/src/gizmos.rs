@@ -86,7 +86,12 @@ fn dot(gizmos: &mut Gizmos, pos: Vec3, radius: f32, fill: Color) {
 /// **Nothing is clipped to it.** A puppet half outside the frame is a shot: a
 /// character entering from the wing, or one shoulder filling the screen. The
 /// line marks the edge; it does not enforce it.
-pub fn draw_stage(mut gizmos: Gizmos, doc: Res<DocumentRes>, scale: Res<RenderScale>) {
+pub fn draw_stage(
+    mut gizmos: Gizmos,
+    doc: Res<DocumentRes>,
+    scale: Res<RenderScale>,
+    state: Res<EditorState>,
+) {
     let ppu = if scale.ppu > 0.0 { scale.ppu } else { 100.0 };
     let half = Vec2::new(
         doc.0.stage.canvas[0] as f32 / ppu * 0.5,
@@ -113,6 +118,33 @@ pub fn draw_stage(mut gizmos: Gizmos, doc: Res<DocumentRes>, scale: Res<RenderSc
     let dash = (half.x * 2.0) / 96.0;
     for i in 0..4 {
         dashed(&mut gizmos, corners[i], corners[(i + 1) % 4], dash, ink);
+    }
+
+    // The title-safe area: a 5% inset, off by default.
+    //
+    // Separate from the output frame above rather than replacing it, because
+    // they answer different questions. The frame is where the picture ends;
+    // this is where a projector's overscan, a screen's bezel or a badly
+    // masked surface can start eating it. A face on the line is a face that
+    // survives the studio and loses an ear in the venue.
+    if state.overlays.safe {
+        let inset = half * 0.9;
+        let safe = [
+            Vec3::new(-inset.x, -inset.y, z),
+            Vec3::new(inset.x, -inset.y, z),
+            Vec3::new(inset.x, inset.y, z),
+            Vec3::new(-inset.x, inset.y, z),
+        ];
+        let safe_ink = colour(theme::gizmo::SAFE_FRAME);
+        for i in 0..4 {
+            dashed(
+                &mut gizmos,
+                safe[i],
+                safe[(i + 1) % 4],
+                dash * 0.6,
+                safe_ink,
+            );
+        }
     }
 }
 
@@ -250,7 +282,7 @@ pub fn draw_rigs(
         // does not need the wireframe to stay correct at that density —
         // culling it beats stuttering.
         const WIREFRAME_TRIANGLE_BUDGET: usize = 8_000;
-        if mp.mesh.triangles.len() / 3 <= WIREFRAME_TRIANGLE_BUDGET {
+        if state.overlays.mesh && mp.mesh.triangles.len() / 3 <= WIREFRAME_TRIANGLE_BUDGET {
             // Skinned on the CPU with the same weights the GPU has, so the
             // wireframe sits on the artwork instead of beside it.
             //
@@ -291,7 +323,11 @@ pub fn draw_rigs(
         }
 
         // Bones, from the same dense order the skinning uses.
-        for b in 0..rig.0.bone_count() {
+        for b in 0..if state.overlays.bones {
+            rig.0.bone_count()
+        } else {
+            0
+        } {
             let Some((ja, jb)) = rig.0.bone_joints(b) else {
                 continue;
             };
@@ -308,13 +344,19 @@ pub fn draw_rigs(
         // point every later joint would be drawn at its neighbour's
         // position — the same class of bug as using a BoneId as an index.
         for joint in mp.skeleton.joints.values() {
+            // The selected joint is drawn whatever the toggle says: turning
+            // joints off to see the artwork must not also lose track of what
+            // the inspector is describing.
+            let selected = state.selection == Selection::Joint(root.0, joint.id);
+            if !state.overlays.joints && !selected {
+                continue;
+            }
             let Some(dense) = rig.0.joint_index(joint.id) else {
                 continue;
             };
             let Some(pos) = joint_world(dense as usize) else {
                 continue;
             };
-            let selected = state.selection == Selection::Joint(root.0, joint.id);
             // Being pulled right now — by a hand today, by a binding or a
             // clip in M2. The one place the Signal Rule spends coral on a
             // gizmo, and it spends it on the thing that is actually live.
