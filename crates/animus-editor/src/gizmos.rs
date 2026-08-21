@@ -171,6 +171,141 @@ fn dashed(gizmos: &mut Gizmos, a: Vec3, b: Vec3, dash: f32, ink: Color) {
 ///
 /// Drawn only in BUILD. On the stage the puppet is the show, and a white box
 /// round it would be the one thing in the frame that is not the performance.
+/// The rotation gizmo: a ring round the selected joint with a handle on it.
+///
+/// **A dial belongs where the limb is.** Rotating from a panel means looking
+/// away from the thing being rotated, and at the moment an operator is
+/// judging an angle by eye that is the one place they cannot afford to look.
+/// The panel keeps its dial for typing an exact number; this is for aiming.
+///
+/// Drawn only around a selected joint that has something below it. A ring on
+/// a fingertip would be a control that does nothing, and the sentence in the
+/// inspector saying so is easy to miss when your eyes are on the stage.
+pub fn draw_rotation_gizmo(
+    mut gizmos: Gizmos,
+    doc: Res<DocumentRes>,
+    scale: Res<RenderScale>,
+    state: Res<EditorState>,
+    rotations: Res<crate::rotate::LiveRotations>,
+    target: Option<Res<crate::viewport::ViewportTarget>>,
+    roots: Query<(&PuppetRoot, &CompiledRigRef, &PuppetSolver)>,
+) {
+    let Selection::Joint(puppet, joint) = state.selection else {
+        return;
+    };
+    if !crate::hit::puppet_visible(&doc.0, puppet) {
+        return;
+    }
+    let Some(PuppetKind::Mesh(mesh)) = doc.0.puppets.get(&puppet).map(|p| &p.kind) else {
+        return;
+    };
+    if animus_core::skeleton::rig_tree(&mesh.skeleton)
+        .descendants(joint)
+        .is_empty()
+    {
+        return;
+    }
+
+    // Where the joint is *now*, so the ring follows a limb the sequencer or
+    // a hand is moving rather than hovering over where it used to rest.
+    let Some(centre) = roots
+        .iter()
+        .find(|(r, _, _)| r.0 == puppet)
+        .and_then(|(_, rig, solver)| {
+            let dense = rig.0.joint_index(joint)?;
+            let img = match state.mode {
+                EditMode::Rig => rig.0.joint_rest(dense as usize)?,
+                _ => *solver.0.positions().get(dense as usize)?,
+            };
+            crate::hit::img_to_stage(&doc.0, puppet, scale.ppu, img)
+        })
+    else {
+        return;
+    };
+
+    // A fixed size on screen, not in the world: a gizmo that shrank with the
+    // zoom would be unusable at exactly the magnification an operator uses
+    // to place a joint precisely.
+    let world_per_pixel = target.as_ref().map(|t| t.world_per_pixel).unwrap_or(0.01);
+    let radius = ROTATION_GIZMO_RADIUS_PX * world_per_pixel;
+    let z = 0.0;
+    let angle = rotations.get(puppet, joint);
+    let live = angle.abs() > 1e-3;
+    let ink = colour(if live {
+        theme::DATA_CYAN
+    } else {
+        theme::gizmo::SELECTED_RING
+    });
+
+    // The track, dashed, so it reads as somewhere to grab rather than as a
+    // circle the puppet is inside.
+    //
+    // Brighter than the wireframe it sits on top of. Drawn at the same
+    // weight, the ring disappeared into the mesh at exactly the zoom where
+    // an operator would be using it — a control nobody can find is a
+    // control that is not there.
+    let track = colour(theme::DIM);
+    let steps = 48;
+    for i in 0..steps {
+        let a0 = std::f32::consts::TAU * i as f32 / steps as f32;
+        let a1 = std::f32::consts::TAU * (i as f32 + 0.55) / steps as f32;
+        gizmos.line(
+            on_ring(centre, radius, a0, z),
+            on_ring(centre, radius, a1, z),
+            track,
+        );
+    }
+
+    // The arc from twelve o'clock to the angle, in whichever direction the
+    // angle went: an arc that always ran one way would show +10 and -10 the
+    // same.
+    if live {
+        let arc_steps = 40;
+        for i in 0..arc_steps {
+            let t0 = angle * i as f32 / arc_steps as f32;
+            let t1 = angle * (i as f32 + 1.0) / arc_steps as f32;
+            gizmos.line(
+                on_ring(centre, radius, up(t0), z),
+                on_ring(centre, radius, up(t1), z),
+                ink,
+            );
+        }
+    }
+
+    // The spoke and the handle: where the operator takes hold.
+    let handle = on_ring(centre, radius, up(angle), z);
+    gizmos.line(centre.extend(z), handle, ink);
+    dot(
+        &mut gizmos,
+        handle,
+        ROTATION_HANDLE_PX * world_per_pixel,
+        ink,
+    );
+}
+
+/// Screen-space radius of the rotation ring, in pixels.
+pub const ROTATION_GIZMO_RADIUS_PX: f32 = 74.0;
+/// Screen-space radius of its handle.
+pub const ROTATION_HANDLE_PX: f32 = 6.0;
+
+/// Zero at twelve o'clock, positive clockwise — the same convention the
+/// panel's dial uses, and the same one image space implies with Y down.
+fn up(angle: f32) -> f32 {
+    angle - std::f32::consts::FRAC_PI_2
+}
+
+fn on_ring(centre: Vec2, radius: f32, angle: f32, z: f32) -> Vec3 {
+    // World Y is up while image space is Y down, so the sine is negated:
+    // without it the gizmo would turn the opposite way from the limb it is
+    // attached to, which is the kind of wrongness that is obvious in motion
+    // and invisible in a screenshot.
+    Vec3::new(
+        centre.x + angle.cos() * radius,
+        centre.y - angle.sin() * radius,
+        z,
+    )
+}
+
 pub fn draw_selection_box(
     mut gizmos: Gizmos,
     doc: Res<DocumentRes>,

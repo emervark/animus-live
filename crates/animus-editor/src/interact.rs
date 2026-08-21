@@ -208,6 +208,8 @@ pub fn apply_interactions(
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     target: Option<Res<ViewportTarget>>,
     mut held: ResMut<animus_runtime::HeldJoint>,
+    mut rotations: ResMut<crate::rotate::LiveRotations>,
+    mut rotation_drag: ResMut<crate::rotate::RotationDrag>,
     solvers: Query<(
         &animus_runtime::PuppetRoot,
         &animus_runtime::CompiledRigRef,
@@ -225,10 +227,8 @@ pub fn apply_interactions(
     // How close counts as "on the joint", in image pixels at this zoom. The
     // gizmo is drawn at the same radius, so the operator is aiming at the
     // thing they can see rather than at an invisible 8-pixel disc.
-    let grab_radius = rig::grab_radius_img(
-        target.as_ref().map(|t| t.world_per_pixel).unwrap_or(0.01),
-        scale.ppu,
-    );
+    let world_per_pixel = target.as_ref().map(|t| t.world_per_pixel).unwrap_or(0.01);
+    let grab_radius = rig::grab_radius_img(world_per_pixel, scale.ppu);
 
     // Where the joints are *drawn*, which is what the hand is aiming at.
     //
@@ -301,6 +301,69 @@ pub fn apply_interactions(
                 }
             } else if !matches!(drag.0, DragState::Idle) {
                 events.push(DragEvent::Release);
+            }
+
+            // ── the rotation ring ──
+            //
+            // **Tested in world units, because that is where it is drawn.**
+            // The first version measured the handle in image pixels and
+            // converted the radius with `world_per_pixel * ppu`, which is
+            // only the right conversion when the layer sits at scale 1 — so
+            // on any resized puppet the invisible target sat somewhere the
+            // visible ring was not. Same class of bug as the gizmos that
+            // once ignored layer scale: one conversion, right in one place
+            // and partial in the other.
+            //
+            // Tried before the joints. The handle sits clear of the rig, so
+            // it cannot steal a grab aimed at a limb — but once a turn is in
+            // progress the pointer crosses the whole puppet, and every joint
+            // it passes would otherwise claim it.
+            let ring_world = crate::gizmos::ROTATION_GIZMO_RADIUS_PX * world_per_pixel;
+            let to_world =
+                |pixel: Vec2| crate::viewport::camera::pixel_to_world(camera, camera_xf, pixel);
+
+            if rotation_drag.0.is_none()
+                && let Selection::Joint(sel_puppet, sel_joint) = state.selection
+                && turnable(&doc, sel_puppet, sel_joint)
+                && let Some(pixel) = input.press_origin.or(input.interact_at)
+                && let Some(pointer) = to_world(pixel)
+                && let Some(centre_img) = displayed
+                    .iter()
+                    .find(|(j, _)| *j == sel_joint)
+                    .map(|(_, p)| *p)
+                && let Some(centre) =
+                    crate::hit::img_to_stage(&doc.0, sel_puppet, scale.ppu, centre_img)
+            {
+                let handle = centre + on_ring_offset(state.live_rotation) * ring_world;
+                let grip = (crate::gizmos::ROTATION_HANDLE_PX * 2.5 * world_per_pixel).max(4.0);
+                if (pointer - handle).length() <= grip {
+                    rotation_drag.0 = Some((sel_puppet, sel_joint));
+                }
+            }
+
+            if let Some((rot_puppet, rot_joint)) = rotation_drag.0 {
+                if input.dragging_left {
+                    if let Some(pixel) = input.interact_at.or(input.hover_at)
+                        && let Some(pointer) = to_world(pixel)
+                        && let Some(centre_img) = displayed
+                            .iter()
+                            .find(|(j, _)| *j == rot_joint)
+                            .map(|(_, p)| *p)
+                        && let Some(centre) =
+                            crate::hit::img_to_stage(&doc.0, rot_puppet, scale.ppu, centre_img)
+                    {
+                        let d = pointer - centre;
+                        // Ignore the dead zone at the middle, where a pixel
+                        // of pointer noise would spin the limb round.
+                        if d.length() > ring_world * 0.15 {
+                            rotations.set(rot_puppet, rot_joint, angle_of(d));
+                        }
+                    }
+                    // A turn owns the frame: nothing else may read the drag.
+                    events.clear();
+                } else {
+                    rotation_drag.0 = None;
+                }
             }
 
             // Nothing on the rig was grabbed, so the click means the picture.
@@ -1027,4 +1090,33 @@ fn add_track_for_selection(
     let dir = Vec2::new(-along.y, along.x) * 24.0;
 
     seq.add_track(j.name.clone(), puppet, joint, dir);
+}
+
+/// Where the ring's handle sits, as a unit offset from the joint.
+///
+/// Zero at twelve o'clock and positive clockwise on screen — the same
+/// convention the panel's dial uses, and the one image space implies with Y
+/// down. World Y is up, hence the negated sine.
+fn on_ring_offset(angle: f32) -> Vec2 {
+    let a = angle - std::f32::consts::FRAC_PI_2;
+    Vec2::new(a.cos(), -a.sin())
+}
+
+/// The inverse: which angle a world-space offset from the joint means.
+fn angle_of(d: Vec2) -> f32 {
+    (-d.y).atan2(d.x) + std::f32::consts::FRAC_PI_2
+}
+
+/// Is there anything below this joint for a rotation to carry?
+///
+/// A ring on a fingertip would be a control that does nothing, and the
+/// sentence in the inspector saying so is easy to miss when the operator's
+/// eyes are on the stage.
+fn turnable(doc: &DocumentRes, puppet: PuppetId, joint: animus_core::ids::JointId) -> bool {
+    match doc.0.puppets.get(&puppet).map(|p| &p.kind) {
+        Some(PuppetKind::Mesh(mesh)) => !animus_core::skeleton::rig_tree(&mesh.skeleton)
+            .descendants(joint)
+            .is_empty(),
+        _ => false,
+    }
 }

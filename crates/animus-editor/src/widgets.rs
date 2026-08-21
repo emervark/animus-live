@@ -485,10 +485,18 @@ pub fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 /// The small explanatory paragraph under a control.
 pub fn note(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .size(theme::FS_SM)
-            .color(theme::DIM),
+    // **Wrapping is not cosmetic here.** A sidebar sizes itself to the
+    // widest thing inside it, and a `Label` that will not wrap reports its
+    // full single-line width as a requirement. One long sentence then pushes
+    // the whole panel out and pins it there: the operator drags the edge in
+    // and it springs straight back, because the text still needs the room.
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .size(theme::FS_SM)
+                .color(theme::DIM),
+        )
+        .wrap(),
     );
 }
 

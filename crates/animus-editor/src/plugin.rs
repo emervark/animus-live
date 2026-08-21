@@ -60,6 +60,7 @@ impl Plugin for EditorPlugin {
             .add_systems(Update, crate::mode::hold_rest_in_rig)
             .init_resource::<crate::rotate::LiveRotations>()
             .init_resource::<crate::rotate::RotationDriven>()
+            .init_resource::<crate::rotate::RotationDrag>()
             // After the drag, so a hand that has grabbed a joint has already
             // claimed it and the rotation steps around it.
             .add_systems(
@@ -86,6 +87,7 @@ impl Plugin for EditorPlugin {
                     gizmos::draw_stage,
                     gizmos::draw_rigs,
                     gizmos::draw_selection_box,
+                    gizmos::draw_rotation_gizmo,
                 )
                     .chain(),
             )

@@ -70,6 +70,15 @@ impl LiveRotations {
     }
 }
 
+/// A rotation being dragged on the stage.
+///
+/// Held across frames like any gesture, and holding the joint rather than
+/// only the angle: the operator can drag the handle right past another
+/// joint, and picking up whichever one is nearest halfway through a turn
+/// would be indistinguishable from the application losing its mind.
+#[derive(Resource, Debug, Default)]
+pub struct RotationDrag(pub Option<(PuppetId, JointId)>);
+
 /// Which joints a rotation wrote last frame, so they can be released.
 #[derive(Resource, Debug, Default)]
 pub struct RotationDriven(Vec<(PuppetId, JointId)>);

@@ -153,16 +153,25 @@ fn row(ui: &mut egui::Ui, name: &str, value: impl Into<String>) {
 /// A panel that has nothing to show yet says so, and says when it will.
 fn stub(ui: &mut egui::Ui, what: &str, when: &str) {
     ui.add_space(theme::S_SM);
-    ui.label(
-        egui::RichText::new(what)
-            .size(theme::FS_CONTROL)
-            .color(theme::DIM),
+    // Wrapped, like every other sentence in a sidebar: a label that refuses
+    // to wrap reports its full width as a requirement and holds the panel
+    // open against the operator's drag.
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(what)
+                .size(theme::FS_CONTROL)
+                .color(theme::DIM),
+        )
+        .wrap(),
     );
     ui.add_space(theme::S_XS);
-    ui.label(
-        egui::RichText::new(when)
-            .size(theme::FS_SM)
-            .color(theme::FAINT),
+    ui.add(
+        egui::Label::new(
+            egui::RichText::new(when)
+                .size(theme::FS_SM)
+                .color(theme::FAINT),
+        )
+        .wrap(),
     );
 }
 
@@ -1990,12 +1999,23 @@ pub fn draw(
                 viewer.state.left_tab = LeftTab::ALL[i];
             }
             ui.add_space(theme::S_MD);
+            // **The panel decides the width, not its contents.** A scroll
+            // area lays out against an unbounded width unless it is told
+            // otherwise, so one long sentence would report itself as a
+            // requirement and hold the sidebar open against the operator's
+            // drag. Clamping here makes every child wrap to the panel
+            // instead of the panel stretching to the child.
+            let inner = ui.available_width();
             egui::ScrollArea::vertical()
+                .id_salt("left_scroll")
                 .auto_shrink([false, false])
-                .show(ui, |ui| match viewer.state.left_tab {
-                    LeftTab::Scene => viewer.scene(ui),
-                    LeftTab::Assets => viewer.assets(ui),
-                    LeftTab::Tools => viewer.tools_body(ui),
+                .show(ui, |ui| {
+                    ui.set_max_width(inner);
+                    match viewer.state.left_tab {
+                        LeftTab::Scene => viewer.scene(ui),
+                        LeftTab::Assets => viewer.assets(ui),
+                        LeftTab::Tools => viewer.tools_body(ui),
+                    }
                 });
         });
 
@@ -2015,21 +2035,26 @@ pub fn draw(
                 viewer.state.right_tab = RightTab::ALL[i];
             }
             ui.add_space(theme::S_MD);
+            let inner = ui.available_width();
             egui::ScrollArea::vertical()
+                .id_salt("right_scroll")
                 .auto_shrink([false, false])
-                .show(ui, |ui| match viewer.state.right_tab {
-                    RightTab::Inspect => viewer.inspector(ui),
-                    RightTab::Physics => viewer.solver(ui),
-                    RightTab::Channels => stub(
-                        ui,
-                        "Live channels appear here once a source is connected.",
-                        "OSC and MIDI are being wired up.",
-                    ),
-                    RightTab::Bind => stub(
-                        ui,
-                        "Bindings map a channel onto a parameter.",
-                        "Use the mark beside any value to start one.",
-                    ),
+                .show(ui, |ui| {
+                    ui.set_max_width(inner);
+                    match viewer.state.right_tab {
+                        RightTab::Inspect => viewer.inspector(ui),
+                        RightTab::Physics => viewer.solver(ui),
+                        RightTab::Channels => stub(
+                            ui,
+                            "Live channels appear here once a source is connected.",
+                            "OSC and MIDI are being wired up.",
+                        ),
+                        RightTab::Bind => stub(
+                            ui,
+                            "Bindings map a channel onto a parameter.",
+                            "Use the mark beside any value to start one.",
+                        ),
+                    }
                 });
         });
 

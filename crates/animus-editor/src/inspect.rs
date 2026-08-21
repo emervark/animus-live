@@ -156,16 +156,8 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &Project, state: &EditorState) -> In
 
     match state.selection {
         Selection::None => {
-            ui.label(
-                egui::RichText::new("Nothing selected.")
-                    .size(theme::FS_CONTROL)
-                    .color(theme::DIM),
-            );
-            ui.label(
-                egui::RichText::new("Click a joint or a layer.")
-                    .size(theme::FS_SM)
-                    .color(theme::FAINT),
-            );
+            crate::widgets::note(ui, "Nothing selected.");
+            crate::widgets::note(ui, "Click a joint or a layer.");
         }
 
         Selection::Layer(id) => {
