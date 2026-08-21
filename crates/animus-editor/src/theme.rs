@@ -66,15 +66,48 @@ pub const SUB: Color32 = Color32::from_rgb(0x8B, 0x93, 0xA0);
 pub const DIM: Color32 = Color32::from_rgb(0x7A, 0x82, 0x8E);
 pub const FAINT: Color32 = Color32::from_rgb(0x4E, 0x55, 0x5F);
 pub const GHOST: Color32 = Color32::from_rgb(0x3F, 0x45, 0x4E);
+/// Between [`MID`] and [`SOFT`]: the comp's `--sm-text-3`, used for the
+/// second line of a two-line row where [`SOFT`] is already the first.
+pub const MUTED: Color32 = Color32::from_rgb(0xAE, 0xB5, 0xBF);
+/// Below [`DIM`] but still legible: hints under a control, ruler numbers
+/// that are not on a downbeat.
+pub const HINT: Color32 = Color32::from_rgb(0x6B, 0x72, 0x7D);
+/// A control that is present and cannot be used. Distinct from [`FAINT`]:
+/// faint is quiet, disabled is *off*, and reading one as the other is how
+/// an operator ends up clicking at something that will never respond.
+pub const DISABLED: Color32 = Color32::from_rgb(0x5E, 0x66, 0x72);
 
 // ── signals: state, never decoration ───────────────────────────────────
 
 pub const GO_GREEN: Color32 = Color32::from_rgb(0x57, 0xC8, 0x78);
 pub const GO_BUTTON: Color32 = Color32::from_rgb(0x2E, 0x9D, 0x57);
+pub const GO_VIVID: Color32 = Color32::from_rgb(0x32, 0xC9, 0x6B);
 pub const LIVE_CORAL: Color32 = Color32::from_rgb(0xF2, 0x60, 0x6A);
 pub const DATA_CYAN: Color32 = Color32::from_rgb(0x45, 0xC8, 0xE8);
 pub const CAUTION_AMBER: Color32 = Color32::from_rgb(0xE3, 0xA9, 0x4F);
 pub const GROUP_VIOLET: Color32 = Color32::from_rgb(0x8F, 0x8F, 0xFF);
+/// The selection blue. Nothing else in the palette means "this one".
+pub const SELECT: Color32 = Color32::from_rgb(0x4F, 0xA0, 0xDC);
+
+// ── washes: a signal's own quiet surface ───────────────────────────────
+//
+// A wash is the signal colour at low alpha, used to tint the row or chip a
+// state belongs to. It is what lets a muted track and a soloed track differ
+// at a glance without either of them shouting: the ink says which signal,
+// the wash says how much of the row it owns.
+
+// Premultiplied, like the veils above and for the same reason:
+// `from_rgba_unmultiplied` is not `const`. Each is the comp's colour at the
+// comp's alpha, multiplied through and rounded.
+pub const GO_WASH: Color32 = Color32::from_rgba_premultiplied(0x0C, 0x1C, 0x11, 0x24);
+pub const STOP_WASH: Color32 = Color32::from_rgba_premultiplied(0x19, 0x0A, 0x0B, 0x1A);
+pub const STOP_BORDER: Color32 = Color32::from_rgba_premultiplied(0x61, 0x26, 0x2A, 0x66);
+/// The one opaque wash: a recording surface has to stay legible over
+/// whatever it sits on, so it is a colour rather than a veil.
+pub const STOP_SURFACE: Color32 = Color32::from_rgb(0x1A, 0x12, 0x15);
+pub const WARN_WASH: Color32 = Color32::from_rgba_premultiplied(0x17, 0x11, 0x08, 0x1A);
+pub const LIVE_WASH: Color32 = Color32::from_rgba_premultiplied(0x0A, 0x1C, 0x21, 0x24);
+pub const SELECT_WASH: Color32 = Color32::from_rgba_premultiplied(0x0D, 0x1A, 0x23, 0x29);
 
 // ── radii ──────────────────────────────────────────────────────────────
 //

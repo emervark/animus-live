@@ -72,6 +72,24 @@ pub enum Icon {
     Record,
     /// A circular arrow: put it back the way it was.
     Reset,
+    /// An arrow curving back on itself: undo.
+    Undo,
+    /// The same, mirrored: redo.
+    Redo,
+    /// A turn anticlockwise, by a fixed step.
+    RotateCcw,
+    /// A turn clockwise, by a fixed step.
+    RotateCw,
+    /// A shackle over a body: the layer is locked.
+    Lock,
+    /// The same with the shackle open.
+    Unlock,
+    /// Six dots: somewhere to take hold of a row.
+    Grip,
+    /// A cross: add one.
+    Plus,
+    /// The application's mark: a joint with a target on it.
+    Mark,
 }
 
 /// Draw `icon` to fill `rect`.
@@ -184,6 +202,98 @@ pub fn draw(painter: &egui::Painter, icon: Icon, rect: egui::Rect, ink: egui::Co
             }
             painter.add(egui::Shape::line(pts, stroke));
             painter.add(line(vec![at(0.16, 0.16), at(0.18, 0.44), at(0.46, 0.36)]));
+        }
+        Icon::Undo | Icon::Redo => {
+            // An arrow that leaves, loops under and comes back: the shape
+            // reads as "the way you came" rather than as a plain rotation,
+            // which is what separates it from `Reset` beside it.
+            let flip = if icon == Icon::Undo { 1.0 } else { -1.0 };
+            let x = |t: f32| at(0.5 + flip * (t - 0.5), 0.0).x;
+            let mut pts = Vec::with_capacity(11);
+            for i in 0..=10 {
+                let t = i as f32 / 10.0;
+                let a = std::f32::consts::PI * (1.0 - t);
+                pts.push(egui::pos2(
+                    x(0.5 + 0.34 * a.cos()),
+                    at(0.0, 0.62 - 0.30 * a.sin()).y,
+                ));
+            }
+            painter.add(egui::Shape::line(pts, stroke));
+            painter.add(line(vec![
+                egui::pos2(x(0.30), at(0.0, 0.34).y),
+                egui::pos2(x(0.16), at(0.0, 0.62).y),
+                egui::pos2(x(0.44), at(0.0, 0.66).y),
+            ]));
+        }
+        Icon::RotateCcw | Icon::RotateCw => {
+            // `Reset`'s ring, mirrored for the clockwise one. Two buttons
+            // that differ only in direction have to differ *visibly* in
+            // direction, or the pair is a coin toss.
+            let flip = if icon == Icon::RotateCw { -1.0 } else { 1.0 };
+            let mut pts = Vec::with_capacity(15);
+            for i in 0..=14 {
+                let a =
+                    std::f32::consts::PI * 0.35 + (std::f32::consts::PI * 1.55) * i as f32 / 14.0;
+                pts.push(at(0.5 + flip * 0.36 * a.cos(), 0.5 + 0.36 * a.sin()));
+            }
+            painter.add(egui::Shape::line(pts, stroke));
+            painter.add(line(vec![
+                at(0.5 - flip * 0.34, 0.16),
+                at(0.5 - flip * 0.32, 0.44),
+                at(0.5 - flip * 0.04, 0.36),
+            ]));
+        }
+        Icon::Lock | Icon::Unlock => {
+            let body = egui::Rect::from_min_max(at(0.18, 0.46), at(0.82, 0.95));
+            painter.rect_stroke(body, 2.0, stroke, egui::StrokeKind::Inside);
+            // The shackle: centred when locked, lifted and offset when not,
+            // so the two states differ in silhouette and not only in detail.
+            let (cx, top) = if icon == Icon::Lock {
+                (0.5, 0.20)
+            } else {
+                (0.68, 0.10)
+            };
+            let mut pts = Vec::with_capacity(9);
+            for i in 0..=8 {
+                let a = std::f32::consts::PI * (1.0 - i as f32 / 8.0);
+                pts.push(at(cx + 0.22 * a.cos(), 0.46 - (0.46 - top) * a.sin()));
+            }
+            painter.add(egui::Shape::line(pts, stroke));
+        }
+        Icon::Grip => {
+            for row in 0..3 {
+                for col in 0..2 {
+                    painter.circle_filled(
+                        at(0.34 + col as f32 * 0.32, 0.22 + row as f32 * 0.28),
+                        rect.width() * 0.07,
+                        ink,
+                    );
+                }
+            }
+        }
+        Icon::Plus => {
+            painter.add(line(vec![at(0.5, 0.14), at(0.5, 0.86)]));
+            painter.add(line(vec![at(0.14, 0.5), at(0.86, 0.5)]));
+        }
+        Icon::Mark => {
+            // A joint with a target on it: what this tool does, in one glyph.
+            // The ring is the go colour and the ticks are structure, which is
+            // the Signal Rule applied to the logo itself.
+            painter.circle_stroke(
+                at(0.5, 0.5),
+                rect.width() * 0.40,
+                egui::Stroke::new(1.4_f32, theme::GO_GREEN),
+            );
+            painter.circle_filled(at(0.5, 0.5), rect.width() * 0.13, theme::GO_GREEN);
+            let tick = egui::Stroke::new(1.1_f32, theme::FAINT);
+            for (a, b) in [
+                ((0.5, 0.02), (0.5, 0.24)),
+                ((0.5, 0.76), (0.5, 0.98)),
+                ((0.02, 0.5), (0.24, 0.5)),
+                ((0.76, 0.5), (0.98, 0.5)),
+            ] {
+                painter.add(egui::Shape::line(vec![at(a.0, a.1), at(b.0, b.1)], tick));
+            }
         }
         Icon::Trash => {
             painter.add(line(vec![at(0.05, 0.22), at(0.95, 0.22)]));

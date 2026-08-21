@@ -492,6 +492,312 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
     );
 }
 
+// ── the comp's shared controls ─────────────────────────────────────────
+//
+// Everything below is used by more than one panel. One-off row layouts stay
+// where they are drawn; a "widget" that exists in a single place is just
+// indirection with a nicer name.
+
+/// The segmented tab strip both sidebars wear.
+///
+/// Returns the tab that was clicked, if one was. Mono and tracked-out at
+/// 9.5px, because these name a *region* rather than an action — the same
+/// reason the panel headings are mono and the buttons inside them are not.
+pub fn tab_bar(ui: &mut egui::Ui, labels: &[&str], active: usize) -> Option<usize> {
+    let mut clicked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::S_HAIR;
+        let gaps = theme::S_HAIR * (labels.len().saturating_sub(1)) as f32;
+        let each = ((ui.available_width() - gaps) / labels.len().max(1) as f32).max(1.0);
+        for (i, label) in labels.iter().enumerate() {
+            let on = i == active;
+            let (rect, response) = ui.allocate_exact_size(
+                egui::vec2(each, theme::FS_TINY + theme::S_MD + 2.0),
+                egui::Sense::click(),
+            );
+            if response.clicked() {
+                clicked = Some(i);
+            }
+            let p = ui.painter();
+            if on {
+                p.rect_filled(rect, theme::R_CHIP as f32, theme::WELL_HOVER);
+            } else if response.hovered() {
+                p.rect_filled(rect, theme::R_CHIP as f32, theme::WELL);
+            }
+            let galley = p.layout_no_wrap(
+                spaced(label),
+                egui::FontId::monospace(theme::FS_TINY + 0.5),
+                if on { theme::BRIGHT } else { theme::SUB },
+            );
+            p.galley(
+                rect.center() - galley.size() * 0.5,
+                galley,
+                if on { theme::BRIGHT } else { theme::SUB },
+            );
+        }
+    });
+    clicked
+}
+
+/// Letter-spacing, which egui has no notion of, done the only way it can be:
+/// by putting the spaces in.
+///
+/// The comp tracks its uppercase mono labels out by ~0.09em, and at 9px that
+/// difference is most of what makes them read as labels rather than as very
+/// small text.
+fn spaced(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 {
+            out.push('\u{2009}'); // thin space
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A status pill: a dot that carries the state and a label that names it.
+///
+/// Used for the ports, the output state and the solver. The dot is filled
+/// when the thing is on and hollow when it is not, so the chip reads at a
+/// glance without the operator having to parse the word.
+pub fn chip(ui: &mut egui::Ui, label: &str, on: bool, ink: egui::Color32) -> egui::Response {
+    let font = egui::FontId::monospace(theme::FS_TINY);
+    let text = spaced(label);
+    let galley = ui.painter().layout_no_wrap(text, font, ink);
+    let size = galley.size() + egui::vec2(theme::S_SM * 2.0 + 11.0, theme::S_SM);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let p = ui.painter();
+    p.rect_filled(
+        rect,
+        theme::R_BADGE as f32,
+        if on { theme::WELL_HOVER } else { theme::WELL },
+    );
+    let dot = egui::pos2(rect.min.x + theme::S_SM, rect.center().y);
+    if on {
+        p.circle_filled(dot, 2.5, ink);
+    } else {
+        p.circle_stroke(dot, 2.5, egui::Stroke::new(1.0_f32, ink));
+    }
+    p.galley(
+        egui::pos2(dot.x + 8.0, rect.center().y - galley.size().y * 0.5),
+        galley,
+        ink,
+    );
+    response
+}
+
+/// A section heading with an optional tag on the right.
+pub fn panel_header(ui: &mut egui::Ui, title: &str, tag: Option<&str>) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title)
+                .size(theme::FS_MD)
+                .color(theme::INK),
+        );
+        if let Some(tag) = tag {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(tag)
+                        .monospace()
+                        .size(theme::FS_TINY)
+                        .color(theme::HINT),
+                );
+            });
+        }
+    });
+}
+
+/// The rotation dial: a 32px gauge reading zero at twelve o'clock.
+///
+/// A dial rather than a slider because an angle is **cyclic and signed**, and
+/// a straight track says neither. On a slider, −179° and +179° sit at
+/// opposite ends of the control while being one degree apart on the puppet;
+/// on a dial they are adjacent, which is what the operator's hand expects.
+///
+/// Paints only — the drag lives with whatever owns the angle, because the
+/// same gauge is driven from the panel and from the viewport.
+pub fn dial(ui: &mut egui::Ui, radians: f32, ink: egui::Color32) -> egui::Response {
+    const SIZE: f32 = 32.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(SIZE, SIZE), egui::Sense::click_and_drag());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let p = ui.painter();
+    let c = rect.center();
+    let r = 13.0;
+
+    p.circle_stroke(c, r, egui::Stroke::new(1.4_f32, theme::SEAM));
+
+    // The arc from twelve o'clock to the angle, in whichever direction the
+    // angle went: an arc that always ran clockwise would show +10° and −10°
+    // identically.
+    let steps = 48;
+    let mut pts = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let t = radians * (i as f32 / steps as f32);
+        // −90° so zero is up; +t clockwise, matching image space where Y is
+        // down and the viewport gizmo turns the same way.
+        let a = t - std::f32::consts::FRAC_PI_2;
+        pts.push(egui::pos2(c.x + a.cos() * r, c.y + a.sin() * r));
+    }
+    if radians.abs() > 1e-3 {
+        p.add(egui::Shape::line(pts, egui::Stroke::new(1.4_f32, ink)));
+    }
+
+    let a = radians - std::f32::consts::FRAC_PI_2;
+    p.line_segment(
+        [
+            c,
+            egui::pos2(c.x + a.cos() * (r - 2.0), c.y + a.sin() * (r - 2.0)),
+        ],
+        egui::Stroke::new(1.0_f32, theme::MID),
+    );
+    p.circle_filled(c, 2.0, theme::MID);
+    response
+}
+
+/// What one press on a nudge row asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nudge {
+    Down,
+    Up,
+    Reset,
+}
+
+/// `↺  47°  ↻  0°` — coarse steps either side of a readout, and a way home.
+///
+/// Buttons as well as a dial because a dial is good at "about there" and bad
+/// at "exactly five more", and rigging needs both.
+pub fn nudge_row(ui: &mut egui::Ui, value: &str, step_hint: &str) -> Option<Nudge> {
+    let mut out = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::S_XS;
+        if icons::button(ui, icons::Icon::RotateCcw, false, Some(theme::SUB))
+            .on_hover_text(format!("Rotate −{step_hint}"))
+            .clicked()
+        {
+            out = Some(Nudge::Down);
+        }
+        let galley = ui.painter().layout_no_wrap(
+            value.to_string(),
+            egui::FontId::monospace(theme::FS_SM),
+            theme::INK,
+        );
+        let (rect, _) = ui.allocate_exact_size(
+            egui::vec2(galley.size().x.max(34.0), galley.size().y),
+            egui::Sense::hover(),
+        );
+        ui.painter().galley(
+            egui::pos2(rect.center().x - galley.size().x * 0.5, rect.min.y),
+            galley,
+            theme::INK,
+        );
+        if icons::button(ui, icons::Icon::RotateCw, false, Some(theme::SUB))
+            .on_hover_text(format!("Rotate +{step_hint}"))
+            .clicked()
+        {
+            out = Some(Nudge::Up);
+        }
+        if ui
+            .add(
+                egui::Button::new(
+                    egui::RichText::new("0°")
+                        .monospace()
+                        .size(theme::FS_TINY)
+                        .color(theme::SUB),
+                )
+                .fill(theme::WELL)
+                .corner_radius(theme::R_BADGE),
+            )
+            .on_hover_text("Back to 0°")
+            .clicked()
+        {
+            out = Some(Nudge::Reset);
+        }
+    });
+    out
+}
+
+/// One cell of the step grid.
+///
+/// **The dot's size is the velocity.** A full hit and a ghost hit differ in
+/// how hard they strike, and size is the one channel that survives being
+/// glanced at from across a room — colour alone would make a ghost read as a
+/// different *kind* of hit rather than a quieter one.
+pub fn step_cell(
+    ui: &mut egui::Ui,
+    width: f32,
+    velocity: f32,
+    ink: egui::Color32,
+    audible: bool,
+    playhead: bool,
+    downbeat: bool,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    let p = ui.painter();
+
+    let filled = velocity > 0.0;
+    let body = match (filled, audible) {
+        (true, true) => ink,
+        (true, false) => theme::GHOST,
+        // An empty cell on a downbeat is a shade lighter, so the bar's
+        // skeleton is visible even in a pattern with nothing in it.
+        (false, _) if downbeat => theme::WELL_HOVER,
+        (false, _) => theme::WELL,
+    };
+    p.rect_filled(rect, theme::R_BADGE as f32, body);
+    if playhead {
+        p.rect_stroke(
+            rect,
+            theme::R_BADGE as f32,
+            egui::Stroke::new(1.0_f32, theme::GO_GREEN),
+            egui::StrokeKind::Inside,
+        );
+    } else if response.hovered() {
+        p.rect_stroke(
+            rect,
+            theme::R_BADGE as f32,
+            egui::Stroke::new(1.0_f32, theme::SEAM),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    if filled {
+        let d = 3.0 + 4.0 * velocity.clamp(0.0, 1.0);
+        p.rect_filled(
+            egui::Rect::from_center_size(rect.center(), egui::vec2(d, d)),
+            1.5,
+            if audible { theme::APP_BG } else { theme::DIM },
+        );
+    }
+    response
+}
+
+/// A horizontal value bar: how much of a channel is arriving right now.
+pub fn meter(ui: &mut egui::Ui, value: f32, ink: egui::Color32) {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 3.0), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let p = ui.painter();
+    p.rect_filled(rect, 2.0, theme::TRACK_BG);
+    let mut filled = rect;
+    filled.max.x = rect.min.x + rect.width() * value.clamp(0.0, 1.0);
+    if filled.max.x > filled.min.x {
+        p.rect_filled(filled, 2.0, ink);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

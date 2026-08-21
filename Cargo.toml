@@ -38,11 +38,14 @@ image       = { version = "0.25", default-features = false, features = ["png", "
 # most of them anyway, and guessing at a trimmed feature list is a worse
 # first move than measuring later.
 bevy        = "=0.19.1"
-# Exactly one `egui` may exist in the graph (spec §2.1). These four versions
+# Exactly one `egui` may exist in the graph (spec §2.1). These three versions
 # are a set: bumping any one of them requires re-checking the others.
+#
+# `egui_dock` was dropped when the layout became fixed: the comp has no
+# draggable panels, and the dock's saved tree brought a class of bug the fixed
+# layout cannot have — a panel closed by its X with nowhere to come back from.
 bevy_egui   = "=0.40"
 egui        = "=0.34"
-egui_dock   = { version = "=0.19.1", features = ["serde"] }
 
 # --- project io ---
 sha2        = "0.10"

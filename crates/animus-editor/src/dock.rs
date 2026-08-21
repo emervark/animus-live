@@ -13,18 +13,9 @@ use crate::chrome;
 use crate::icons;
 use crate::import::ImportStatus;
 use crate::inspect::{InspectorEdit, inspector_ui};
-use crate::state::{EditMode, EditorState, Selection, TabKind, Tool};
+use crate::state::{EditMode, EditorState, LeftTab, PanelSizes, RightTab, Selection, Tool};
 use crate::theme;
 use crate::viewport::{ViewportInput, ViewportTarget, viewport_widget};
-
-/// How tall the performance strip is, in egui points.
-///
-/// A fixed band rather than a share of the window: the strip holds a
-/// transport row, a clip list and a step grid, and those do not get smaller
-/// on a small screen — they get scrolled.
-// One row of eight steps plus the transport. It was sized for two rows of
-// four; eight across needs half the height and the stage gets the rest.
-const STRIP_HEIGHT: f32 = 152.0;
 
 /// The launcher folded down to its transport row.
 const STRIP_COLLAPSED: f32 = 46.0;
@@ -194,42 +185,6 @@ pub struct TabViewer<'a> {
     pub viewport_input: Option<ViewportInput>,
 }
 
-impl egui_dock::TabViewer for TabViewer<'_> {
-    type Tab = TabKind;
-
-    fn title(&mut self, tab: &mut Self::Tab) -> egui::WidgetText {
-        tab.title().into()
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut Self::Tab) {
-        match tab {
-            TabKind::Viewport => self.viewport(ui),
-            TabKind::Layers => self.layers(ui),
-            TabKind::Assets => self.assets(ui),
-            TabKind::Tools => self.tools(ui),
-            TabKind::Inspector => self.inspector(ui),
-            TabKind::Solver => self.solver(ui),
-            TabKind::Output => self.output(ui),
-            TabKind::Channels => stub(
-                ui,
-                "Live channels appear here once a source is connected.",
-                "OSC, MIDI and audio arrive in M2.",
-            ),
-            TabKind::Bindings => stub(
-                ui,
-                "Bindings map a channel onto a parameter.",
-                "Use the ◎ beside any value to start one, from M2.",
-            ),
-        }
-    }
-
-    /// The viewport is the one surface that must not be closed by accident:
-    /// without it there is nothing to edit.
-    fn closeable(&mut self, tab: &mut Self::Tab) -> bool {
-        !matches!(tab, TabKind::Viewport)
-    }
-}
-
 impl TabViewer<'_> {
     fn viewport(&mut self, ui: &mut egui::Ui) {
         let available = ui.available_size();
@@ -382,6 +337,17 @@ impl TabViewer<'_> {
         );
     }
 
+    /// SCENE: what is in the show, and what its skeleton looks like.
+    ///
+    /// Two lists in one tab because they answer the same question at two
+    /// depths — which artwork is on stage, and how it is jointed. The comp
+    /// stacks them for that reason rather than to save a tab.
+    fn scene(&mut self, ui: &mut egui::Ui) {
+        self.layers(ui);
+        ui.add_space(theme::S_LG);
+        self.rig_tree(ui);
+    }
+
     fn layers(&mut self, ui: &mut egui::Ui) {
         if self.doc.layers.is_empty() {
             stub(ui, "No layers yet.", "Import an image to make one.");
@@ -513,14 +479,7 @@ impl TabViewer<'_> {
     }
 
     /// Where the show goes, and how big it is.
-    fn output(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .id_salt("output_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| self.output_body(ui));
-    }
-
-    fn output_body(&mut self, ui: &mut egui::Ui) {
+    pub fn output_body(&mut self, ui: &mut egui::Ui) {
         label(ui, "window");
         match &self.output {
             Some(o) => {
@@ -645,6 +604,108 @@ impl TabViewer<'_> {
         );
     }
 
+    /// The skeleton as a list, indented by depth.
+    ///
+    /// **A rig stores no hierarchy** — bones connect joint pairs and nothing
+    /// names a parent — so the tree here is derived by
+    /// [`animus_core::skeleton::rig_tree`], the same function forward
+    /// kinematics uses. That matters: what the operator reads in this list is
+    /// exactly what a rotation will carry, rather than a second opinion about
+    /// the same bones.
+    fn rig_tree(&mut self, ui: &mut egui::Ui) {
+        let Some((pid, puppet)) = self.doc.puppets.iter().next() else {
+            return;
+        };
+        let animus_core::doc::PuppetKind::Mesh(mesh) = &puppet.kind else {
+            return;
+        };
+        crate::widgets::panel_header(
+            ui,
+            &format!("Rig · {}", puppet.name),
+            Some(&format!("{} joints", mesh.skeleton.joints.len())),
+        );
+        ui.add_space(theme::S_XS);
+
+        if mesh.skeleton.joints.is_empty() {
+            ui.label(
+                egui::RichText::new("No joints yet. Place them in RIG.")
+                    .size(theme::FS_SM)
+                    .color(theme::HINT),
+            );
+            return;
+        }
+
+        let tree = animus_core::skeleton::rig_tree(&mesh.skeleton);
+        // Depth-first from each root, so a limb reads as a limb rather than
+        // as every joint at that distance from the hip.
+        let mut stack: Vec<(animus_core::ids::JointId, usize)> =
+            tree.roots().iter().rev().map(|j| (*j, 0)).collect();
+        let mut clicked = None;
+        while let Some((id, depth)) = stack.pop() {
+            for child in tree.children(id).iter().rev() {
+                stack.push((*child, depth + 1));
+            }
+            let Some(joint) = mesh.skeleton.joints.get(&id) else {
+                continue;
+            };
+            let selected = self.state.selection == Selection::Joint(*pid, id);
+
+            let (rect, response) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+            if response.clicked() {
+                clicked = Some(Selection::Joint(*pid, id));
+            }
+            let p = ui.painter();
+            if selected {
+                p.rect_filled(rect, theme::R_BADGE as f32, theme::SELECT_WASH);
+            } else if response.hovered() {
+                p.rect_filled(rect, theme::R_BADGE as f32, theme::WELL);
+            }
+
+            let x = rect.min.x + theme::S_SM + depth as f32 * theme::S_MD;
+            // Pinned joints carry a mark rather than a colour: pinning is a
+            // fact about the rig, not a live signal.
+            let ink = if selected { theme::BRIGHT } else { theme::MID };
+            p.circle_filled(
+                egui::pos2(x, rect.center().y),
+                2.0,
+                if joint.pinned {
+                    theme::DIM
+                } else {
+                    theme::GHOST
+                },
+            );
+            let galley = p.layout_no_wrap(
+                joint.name.clone(),
+                egui::FontId::proportional(theme::FS_SM + 0.5),
+                ink,
+            );
+            p.galley(
+                egui::pos2(x + theme::S_SM, rect.center().y - galley.size().y * 0.5),
+                galley,
+                ink,
+            );
+            if joint.pinned {
+                let tag = p.layout_no_wrap(
+                    "pinned".into(),
+                    egui::FontId::monospace(theme::FS_TINY),
+                    theme::HINT,
+                );
+                p.galley(
+                    egui::pos2(
+                        rect.max.x - theme::S_SM - tag.size().x,
+                        rect.center().y - tag.size().y * 0.5,
+                    ),
+                    tag,
+                    theme::HINT,
+                );
+            }
+        }
+        if let Some(sel) = clicked {
+            self.state.selection = sel;
+        }
+    }
+
     fn assets(&mut self, ui: &mut egui::Ui) {
         // The import message goes at the top, where the eye already is after
         // dropping a file — and it stays until the next import rather than
@@ -699,13 +760,6 @@ impl TabViewer<'_> {
     /// took its share of the window, MODE was the first thing to fall below
     /// this panel's fold, and a Live switch you cannot see is a Live switch
     /// you cannot leave.
-    fn tools(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical()
-            .id_salt("tools_scroll")
-            .auto_shrink([false, false])
-            .show(ui, |ui| self.tools_body(ui));
-    }
-
     fn tools_body(&mut self, ui: &mut egui::Ui) {
         // The mode used to live here. It is in the title bar now: it is the
         // most consequential control in the editor and it belongs where the
@@ -1508,6 +1562,8 @@ pub fn draw(
                 seq.armed,
                 file_status,
                 &mut out.file_request,
+                &mut out.wants_undo,
+                &mut out.wants_redo,
             );
         });
 
@@ -1534,12 +1590,20 @@ pub fn draw(
         .map(|p| p.name.clone())
         .unwrap_or_else(|| "no puppet".into());
 
-    egui::TopBottomPanel::bottom("animus_clips")
-        .exact_height(if state.clips_collapsed {
-            STRIP_COLLAPSED
-        } else {
-            STRIP_HEIGHT
-        })
+    // **Draggable, not fixed.** A pattern with more tracks than fit is the
+    // normal case once a puppet has a few limbs, and the alternative to
+    // dragging this edge up is scrolling a grid whose rows are the point.
+    // Collapsed is still exact: folded away means folded away.
+    let sequencer = egui::TopBottomPanel::bottom("animus_clips");
+    let sequencer = if state.clips_collapsed {
+        sequencer.exact_height(STRIP_COLLAPSED)
+    } else {
+        sequencer
+            .resizable(true)
+            .default_height(state.panels.sequencer)
+            .height_range(PanelSizes::SEQUENCER)
+    };
+    sequencer
         .frame(
             egui::Frame::NONE
                 .fill(theme::SIDE_PANEL)
@@ -1563,64 +1627,151 @@ pub fn draw(
                 &mut out.step_actions,
             );
         });
+    if !state.clips_collapsed {
+        // Read back what the drag settled on, so it outlives the session.
+        if let Some(rect) = ctx.memory(|m| m.area_rect("animus_clips")) {
+            state.panels.sequencer = rect.height();
+        }
+    }
+
+    let mut viewer = TabViewer {
+        state,
+        doc: &doc.0,
+        viewport_texture,
+        target,
+        import_status,
+        output: output.clone(),
+        inspector_edits: Vec::new(),
+        layer_move: None,
+        layer_edits: Vec::new(),
+        set_output_vsync: None,
+        output_edits: OutputEdits::default(),
+        wants_reset_pose: false,
+        set_live_rotation: None,
+        wants_fit: false,
+        wants_undo: false,
+        wants_redo: false,
+        viewport_input: None,
+    };
+
+    // Declaration order is the layout: egui hands each panel its slice in
+    // turn and the central panel takes what is left. The sidebars come after
+    // the bottom strip declared above, so the sequencer spans the full width
+    // the way the comp draws it.
+    let mut sizes = viewer.state.panels;
+
+    egui::SidePanel::left("animus_left")
+        .resizable(true)
+        .default_width(sizes.left)
+        .width_range(PanelSizes::LEFT)
+        .frame(sidebar_frame())
+        .show(ctx, |ui| {
+            sizes.left = ui.max_rect().width();
+            let active = LeftTab::ALL
+                .iter()
+                .position(|t| *t == viewer.state.left_tab)
+                .unwrap_or(0);
+            let labels: Vec<&str> = LeftTab::ALL.iter().map(|t| t.label()).collect();
+            if let Some(i) = crate::widgets::tab_bar(ui, &labels, active) {
+                viewer.state.left_tab = LeftTab::ALL[i];
+            }
+            ui.add_space(theme::S_MD);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| match viewer.state.left_tab {
+                    LeftTab::Scene => viewer.scene(ui),
+                    LeftTab::Assets => viewer.assets(ui),
+                    LeftTab::Tools => viewer.tools_body(ui),
+                });
+        });
+
+    egui::SidePanel::right("animus_right")
+        .resizable(true)
+        .default_width(sizes.right)
+        .width_range(PanelSizes::RIGHT)
+        .frame(sidebar_frame())
+        .show(ctx, |ui| {
+            sizes.right = ui.max_rect().width();
+            let active = RightTab::ALL
+                .iter()
+                .position(|t| *t == viewer.state.right_tab)
+                .unwrap_or(0);
+            let labels: Vec<&str> = RightTab::ALL.iter().map(|t| t.label()).collect();
+            if let Some(i) = crate::widgets::tab_bar(ui, &labels, active) {
+                viewer.state.right_tab = RightTab::ALL[i];
+            }
+            ui.add_space(theme::S_MD);
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| match viewer.state.right_tab {
+                    RightTab::Inspect => viewer.inspector(ui),
+                    RightTab::Physics => viewer.solver(ui),
+                    RightTab::Channels => stub(
+                        ui,
+                        "Live channels appear here once a source is connected.",
+                        "OSC and MIDI are being wired up.",
+                    ),
+                    RightTab::Bind => stub(
+                        ui,
+                        "Bindings map a channel onto a parameter.",
+                        "Use the mark beside any value to start one.",
+                    ),
+                });
+        });
 
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(theme::APP_BG))
-        .show(ctx, |ui| {
-            let mut dock = std::mem::replace(&mut state.dock, egui_dock::DockState::new(vec![]));
-            let mut viewer = TabViewer {
-                state,
-                doc: &doc.0,
-                viewport_texture,
-                target,
-                import_status,
-                output: output.clone(),
-                inspector_edits: Vec::new(),
-                layer_move: None,
-                layer_edits: Vec::new(),
-                set_output_vsync: None,
-                output_edits: OutputEdits::default(),
-                wants_reset_pose: false,
-                set_live_rotation: None,
-                wants_fit: false,
-                wants_undo: false,
-                wants_redo: false,
-                viewport_input: None,
-            };
-            egui_dock::DockArea::new(&mut dock)
-                .style(dock_style(&ui.ctx().global_style()))
-                .show_inside(ui, &mut viewer);
-            out.viewport_input = viewer.viewport_input;
-            out.inspector_edits = std::mem::take(&mut viewer.inspector_edits);
-            out.layer_move = viewer.layer_move;
-            out.layer_edits = std::mem::take(&mut viewer.layer_edits);
-            out.set_output_vsync = viewer.set_output_vsync;
-            out.output_edits = viewer.output_edits;
-            out.wants_reset_pose = viewer.wants_reset_pose;
-            out.set_live_rotation = viewer.set_live_rotation;
-            out.wants_fit = viewer.wants_fit;
-            out.wants_undo = viewer.wants_undo;
-            out.wants_redo = viewer.wants_redo;
-            state.dock = dock;
-        });
+        .show(ctx, |ui| viewer.viewport(ui));
+
+    // **Output settings live behind the output chip**, not in a panel of
+    // their own. The comp puts the *state* there — OFF, PREVIEW, LIVE — and
+    // the settings belong with the state that reports them: an operator who
+    // wants to know where the show is going and one who wants to change it
+    // are reaching for the same thing.
+    if viewer.state.output_menu_open {
+        let mut open = true;
+        egui::Window::new("Output")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .anchor(
+                egui::Align2::RIGHT_TOP,
+                [-theme::S_MD, chrome::TITLE_HEIGHT],
+            )
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::MENU_BG)
+                    .stroke(egui::Stroke::new(1.0_f32, theme::SEAM))
+                    .corner_radius(theme::R_CARD)
+                    .inner_margin(egui::Margin::same(theme::S_MD as i8)),
+            )
+            .show(ctx, |ui| viewer.output_body(ui));
+        viewer.state.output_menu_open = open;
+    }
+
+    viewer.state.panels = sizes;
+    out.viewport_input = viewer.viewport_input;
+    out.inspector_edits = std::mem::take(&mut viewer.inspector_edits);
+    out.layer_move = viewer.layer_move;
+    out.layer_edits = std::mem::take(&mut viewer.layer_edits);
+    out.set_output_vsync = viewer.set_output_vsync;
+    out.output_edits = viewer.output_edits;
+    out.wants_reset_pose = viewer.wants_reset_pose;
+    out.set_live_rotation = viewer.set_live_rotation;
+    out.wants_fit = viewer.wants_fit;
+    out.wants_undo = viewer.wants_undo;
+    out.wants_redo = viewer.wants_redo;
 
     out
 }
 
-fn dock_style(base: &egui::Style) -> egui_dock::Style {
-    let mut style = egui_dock::Style::from_egui(base);
-    style.dock_area_padding = None;
-    style.tab_bar.bg_fill = theme::APP_BG;
-    style.tab_bar.hline_color = theme::SEAM;
-    style.tab.active.bg_fill = theme::WORKSPACE;
-    style.tab.active.text_color = theme::BRIGHT;
-    style.tab.inactive.bg_fill = theme::APP_BG;
-    style.tab.inactive.text_color = theme::DIM;
-    style.tab.focused.bg_fill = theme::WORKSPACE;
-    style.tab.focused.text_color = theme::BRIGHT;
-    style.tab.hovered.text_color = theme::INK;
-    style.separator.color_idle = theme::SEAM;
-    style.separator.color_hovered = theme::WELL_HOVER;
-    style.separator.color_dragged = theme::GO_GREEN;
-    style
+/// Both sidebars, so they cannot drift apart.
+fn sidebar_frame() -> egui::Frame {
+    egui::Frame::NONE
+        .fill(theme::SIDE_PANEL)
+        .inner_margin(egui::Margin::symmetric(
+            theme::S_SM as i8,
+            theme::S_SM as i8,
+        ))
 }

@@ -26,5 +26,5 @@ pub mod widgets;
 
 pub use import::{ImportStatus, ProjectRoot};
 pub use plugin::{EditorPlugin, EditorSet};
-pub use state::{EditMode, EditorState, Selection, TabKind, Tool};
+pub use state::{EditMode, EditorState, LeftTab, RightTab, Selection, Tool};
 pub use viewport::{ViewportInput, ViewportTarget};

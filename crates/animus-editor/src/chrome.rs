@@ -255,9 +255,19 @@ pub fn title_bar(
     recording: bool,
     file_status: Option<&str>,
     file_request: &mut Option<crate::files::FileAction>,
+    wants_undo: &mut bool,
+    wants_redo: &mut bool,
 ) {
     ui.horizontal_centered(|ui| {
         ui.add_space(theme::S_MD);
+        let (mark, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+        crate::icons::draw(
+            ui.painter(),
+            crate::icons::Icon::Mark,
+            mark,
+            theme::GO_GREEN,
+        );
+        ui.add_space(theme::S_XS);
         ui.label(
             egui::RichText::new("ANIMUS LIVE")
                 .size(theme::FS_LABEL)
@@ -272,7 +282,51 @@ pub fn title_bar(
         );
 
         file_menu(ui, file_request);
-        view_menu(ui, state);
+
+        // Undo and redo where the comp puts them: beside the file controls,
+        // because they are the same kind of act — something happening to the
+        // document rather than to the puppet. Disabled rather than hidden, so
+        // an empty history reads as "nothing to undo" instead of as a missing
+        // button.
+        ui.add_space(theme::S_SM);
+        ui.spacing_mut().item_spacing.x = theme::S_HAIR;
+        let can_undo = state.undo.can_undo();
+        let can_redo = state.undo.can_redo();
+        if crate::icons::button(
+            ui,
+            crate::icons::Icon::Undo,
+            false,
+            Some(if can_undo {
+                theme::SOFT
+            } else {
+                theme::DISABLED
+            }),
+        )
+        .on_hover_text(match state.undo.labels().next() {
+            Some(label) => format!("Undo {label} — Ctrl+Z"),
+            None => "Nothing to undo".into(),
+        })
+        .clicked()
+            && can_undo
+        {
+            *wants_undo = true;
+        }
+        if crate::icons::button(
+            ui,
+            crate::icons::Icon::Redo,
+            false,
+            Some(if can_redo {
+                theme::SOFT
+            } else {
+                theme::DISABLED
+            }),
+        )
+        .on_hover_text("Redo — Ctrl+Shift+Z")
+        .clicked()
+            && can_redo
+        {
+            *wants_redo = true;
+        }
 
         // No mode switch here. With three stages that *are* the three modes,
         // a switch in the title bar and a navigator below it would be two
@@ -313,12 +367,18 @@ pub fn title_bar(
                 chip(ui, "SOLVER PAUSED", theme::CAUTION_AMBER, true);
             }
 
-            match output {
-                Some(o) => {
-                    chip(ui, &o.short, theme::LIVE_CORAL, true).on_hover_text(&o.description)
-                }
-                None => chip(ui, "OUTPUT OFF", theme::DIM, false),
+            // The chip is also the way in to the output settings: it already
+            // reports where the show is going, and an operator asking that
+            // question and one changing the answer reach for the same thing.
+            let out_chip = match output {
+                Some(o) => chip(ui, &o.short, theme::LIVE_CORAL, true)
+                    .on_hover_text(format!("{}\nClick for output settings.", o.description)),
+                None => chip(ui, "OUTPUT OFF", theme::DIM, false)
+                    .on_hover_text("No output window. Click for output settings."),
             };
+            if out_chip.clicked() {
+                state.output_menu_open = !state.output_menu_open;
+            }
 
             if recording {
                 chip(ui, "REC", theme::LIVE_CORAL, true);
@@ -375,60 +435,6 @@ fn file_menu(ui: &mut egui::Ui, request: &mut Option<crate::files::FileAction>) 
             *request = Some(action);
         }
     }
-}
-
-/// Every panel, with a tick beside the ones that are open.
-///
-/// A menu rather than a row of toggles: eight panels is more than the chrome
-/// has room for, and this is a control an operator touches when something has
-/// gone missing, not one they use while working.
-fn view_menu(ui: &mut egui::Ui, state: &mut EditorState) {
-    use crate::state::{TabKind, tab_is_open, toggle_tab};
-
-    ui.menu_button(
-        egui::RichText::new("View")
-            .size(theme::FS_SM)
-            .color(theme::SOFT),
-        |ui| {
-            ui.set_min_width(150.0);
-            for tab in TabKind::ALL {
-                let open = tab_is_open(&state.dock, tab);
-                let locked = tab == TabKind::Viewport;
-                let mut checked = open;
-                let response = ui.add_enabled(
-                    !locked,
-                    egui::Checkbox::new(
-                        &mut checked,
-                        egui::RichText::new(tab.title()).size(theme::FS_CONTROL),
-                    ),
-                );
-                let response = if locked {
-                    response.on_disabled_hover_text(
-                        "The viewport stays. Without it there is nothing to edit.",
-                    )
-                } else if tab.is_stub() {
-                    response.on_hover_text("Not wired up yet — the panel says so itself.")
-                } else {
-                    response
-                };
-                if response.changed() {
-                    toggle_tab(&mut state.dock, tab);
-                }
-            }
-
-            ui.separator();
-            if ui
-                .button(egui::RichText::new("Reset layout").size(theme::FS_CONTROL))
-                .on_hover_text("Put every panel back where it started.")
-                .clicked()
-            {
-                state.dock = crate::state::default_layout();
-                ui.close();
-            }
-        },
-    )
-    .response
-    .on_hover_text("Show or hide panels. A panel closed by its X comes back here.");
 }
 
 /// The workflow navigator: five stages, ticks derived from the document.

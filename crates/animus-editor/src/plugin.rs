@@ -214,7 +214,7 @@ fn persist_layout_on_exit(
         return;
     }
     if exits.read().next().is_some() {
-        save_layout(&state.dock);
+        save_layout(&state.panels);
         *saved = true;
     }
 }
