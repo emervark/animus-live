@@ -1,203 +1,306 @@
-//! The step sequencer: a drum machine for poses.
+//! The step sequencer: a drum machine for a puppet.
 //!
-//! Musical time is divided into a grid of equal steps. A step holds a **pose**
-//! — where each joint should be — and the playhead walks the grid at a tempo.
-//! On every step edge the pose is written into [`JointTargets`], and the
-//! springs carry the puppet from wherever it is to wherever the step says.
+//! Musical time is divided into a grid of equal steps. Each **track** owns a
+//! joint and a direction, and each cell in that track's row is a **hit**: a
+//! shove given to that joint and everything hanging off it when the playhead
+//! crosses the cell.
 //!
-//! **The in-betweens are physics, not keyframes.** That is the whole design.
-//! An animator would author the frames between two poses; here the solver
-//! does it, and it does it differently every time depending on where the
-//! puppet already was, how fast it was moving, and whether a hand is holding
-//! part of it. Two identical bars never play identically, which is what makes
-//! this an instrument rather than a player.
+//! ## Why a hit and not a pose
+//!
+//! A pose says where a limb should *be*; a hit says what happens *to* it. In
+//! a mass-spring puppet the second is the honest one. A hit is delivered as
+//! velocity — `pos` moves, `prev` does not, and in Verlet that difference is
+//! the velocity — so the puppet leaves rest at speed and the bones and
+//! `rest_pull` take the energy back out at whatever rate that puppet is tuned
+//! for. Nothing in here decays anything: **the decay is the physics**, which
+//! is why two hits of the same strength on two differently-tuned puppets look
+//! like two different characters rather than the same animation twice.
 //!
 //! Three consequences fall out of it rather than being features:
 //!
-//! - **A step is a target, not a command.** A puppet that cannot reach the
-//!   pose in one step simply arrives late, and the lateness reads as weight.
+//! - **Two identical bars never play identically.** Where the limb already
+//!   was, and how fast it was already moving, are part of the result.
 //! - **The hand wins.** A joint being held is skipped, so grabbing a limb
 //!   mid-bar takes it over and letting go hands it back.
-//! - **Recording is the same act as playing.** With the transport running and
-//!   record armed, whatever pose the puppet is in when the playhead crosses a
-//!   step is written into that step — exactly how a drum machine records.
+//! - **Tracks are limbs, not channels.** One row per joint chain is what
+//!   makes a pattern readable: the arm's rhythm is one line you can see.
 //!
-//! Steps are session state, not document state: the v1 file format has no
+//! ## The chain, and why it falls off
+//!
+//! A hit travels down the tree from its joint, scaled by `FALLOFF^depth`.
+//! Hitting a shoulder should carry the arm — a shoulder that moved while its
+//! own hand stayed put is not a shoulder, it is a dislocation — but the hand
+//! should arrive later and softer, which is exactly what a decaying impulse
+//! down the chain produces once the springs are involved.
+//!
+//! Patterns are session state, not document state: the v1 file format has no
 //! place for them yet, so a pattern lives until the app closes. That is a
 //! deliberate limit and not a hidden one — the panel says so.
 
+use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use glam::Vec2;
 
 use animus_core::ids::{JointId, PuppetId};
 
-use crate::solve::{HeldJoint, JointTargets};
+use crate::project::DocumentRes;
+use crate::solve::HeldJoint;
 
-/// Where every driven joint should be at one step.
-pub type Pose = Vec<(PuppetId, JointId, Vec2)>;
+/// How far a hit reaches down the chain: each step away keeps this much.
+///
+/// From the comp. Low enough that a hand is a suggestion rather than a copy
+/// of the shoulder, high enough that the limb moves as one thing.
+pub const FALLOFF: f32 = 0.78;
+
+/// A ghost hit's strength, as a fraction of a full one.
+pub const GHOST: f32 = 0.45;
+pub const FULL: f32 = 1.0;
 
 /// The step counts the grid offers.
 ///
-/// A bar, two, four. An arbitrary length is a worse instrument, not a more
-/// flexible one — and every one of these divides by four, so a pattern still
-/// reads as a bar when the grid changes under it.
-pub const STEP_COUNTS: [usize; 3] = [4, 8, 16];
+/// A bar, two, four. Every one divides by four, so a pattern still reads as
+/// bars when the grid length changes under it.
+pub const STEP_COUNTS: [usize; 3] = [8, 16, 32];
+
+/// How a step relates to the beat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quantize {
+    Quarter,
+    #[default]
+    Eighth,
+    Sixteenth,
+}
+
+impl Quantize {
+    pub const ALL: [Quantize; 3] = [Quantize::Quarter, Quantize::Eighth, Quantize::Sixteenth];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Quantize::Quarter => "1/4",
+            Quantize::Eighth => "1/8",
+            Quantize::Sixteenth => "1/16",
+        }
+    }
+
+    /// Steps per beat.
+    pub fn division(self) -> f32 {
+        match self {
+            Quantize::Quarter => 1.0,
+            Quantize::Eighth => 2.0,
+            Quantize::Sixteenth => 4.0,
+        }
+    }
+}
+
+/// One row of the grid: a limb, a direction, and when it gets hit.
+#[derive(Debug, Clone)]
+pub struct Track {
+    pub name: String,
+    pub puppet: PuppetId,
+    /// The joint the hit lands on. Everything below it comes along.
+    pub joint: JointId,
+    /// Which way the shove goes, in image pixels per hit.
+    pub dir: Vec2,
+    /// The row's colour in the grid. Tracks are told apart by colour before
+    /// they are told apart by name, because the grid is read at a glance.
+    pub ink: [u8; 3],
+    pub mute: bool,
+    pub solo: bool,
+    /// `0.0` empty, [`GHOST`] quiet, [`FULL`] hard.
+    pub steps: Vec<f32>,
+}
+
+impl Track {
+    pub fn new(
+        name: impl Into<String>,
+        puppet: PuppetId,
+        joint: JointId,
+        dir: Vec2,
+        ink: [u8; 3],
+    ) -> Self {
+        Self {
+            name: name.into(),
+            puppet,
+            joint,
+            dir,
+            ink,
+            mute: false,
+            solo: false,
+            steps: vec![0.0; *STEP_COUNTS.last().unwrap()],
+        }
+    }
+
+    /// How many cells in the visible length hold a hit.
+    pub fn hits(&self, len: usize) -> usize {
+        self.steps.iter().take(len).filter(|v| **v > 0.0).count()
+    }
+}
+
+/// The colours new tracks take, in order. Signal colours, because a track
+/// *is* a live thing, and reused round-robin once they run out.
+pub const TRACK_INKS: [[u8; 3]; 6] = [
+    [0x57, 0xC8, 0x78],
+    [0x45, 0xC8, 0xE8],
+    [0xE3, 0xA9, 0x4F],
+    [0xB9, 0x8B, 0xE8],
+    [0xF2, 0x60, 0x6A],
+    [0x8F, 0x8F, 0xFF],
+];
 
 /// The grid, the transport, and what is being recorded into it.
 #[derive(Resource, Debug)]
 pub struct Sequencer {
-    /// One slot per step. `None` is a rest, and rests are as much of a
-    /// pattern as hits: a puppet left alone for two steps is a puppet the
-    /// springs are still settling.
-    pub steps: Vec<Option<Pose>>,
+    pub tracks: Vec<Track>,
+    /// Visible steps: one of [`STEP_COUNTS`].
+    pub len: usize,
+    pub quantize: Quantize,
     pub bpm: f32,
     pub running: bool,
-    /// Position in steps, fractional. Wraps at `steps.len()`.
+    /// Position in steps, fractional. Wraps at `len`.
     pub position: f32,
-    /// The step being edited, and the one a live recording writes into first.
+    /// The track TAP writes into, and the one the footer's actions act on.
     pub selected: usize,
     /// Record is armed by hand. **Entering PERFORM never arms it**: an editor
     /// that starts recording because you changed screens is an editor you
     /// cannot trust with a show.
     pub armed: bool,
-    /// Where the glide starts: the pose the puppet was actually in when the
-    /// playhead crossed into the current step.
-    ///
-    /// Taken from the puppet rather than from the previous step, because the
-    /// operator may have grabbed a limb: the glide has to start from where
-    /// the puppet *is*, not from where the pattern last told it to be.
-    glide_from: Pose,
-    /// What the last fired step wrote, so it can be taken back.
-    ///
-    /// A target is a standing instruction — the solver pins that joint until
-    /// something removes it — so a step that fires without clearing the
-    /// previous one leaves joints pinned by a pose two bars old.
-    driven_last: Vec<(PuppetId, JointId)>,
+    /// A TAP held down this frame, to be written under the playhead.
+    pub tapping: bool,
+    /// Set on the frame a step edge is crossed, for the panel's flash.
+    pub fired: Vec<f32>,
 }
 
 impl Default for Sequencer {
     fn default() -> Self {
         Self {
-            steps: vec![None; 8],
+            tracks: Vec::new(),
+            len: 16,
+            quantize: Quantize::default(),
             bpm: 120.0,
             running: false,
             position: 0.0,
             selected: 0,
             armed: false,
-            glide_from: Pose::new(),
-            driven_last: Vec::new(),
+            tapping: false,
+            fired: Vec::new(),
         }
     }
 }
 
 impl Sequencer {
-    pub fn len(&self) -> usize {
-        self.steps.len()
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.steps.is_empty()
+        self.tracks.is_empty()
     }
 
     /// The step the playhead is on.
     pub fn current(&self) -> usize {
-        (self.position as usize).min(self.steps.len().saturating_sub(1))
+        (self.position as usize).min(self.len.saturating_sub(1))
     }
 
-    /// How far through the current step the playhead is, 0..1.
-    pub fn step_fraction(&self) -> f32 {
-        self.position.fract().clamp(0.0, 1.0)
-    }
-
-    /// Seconds per step. One step is one beat.
+    /// Seconds per step, from the tempo and the grid division.
     pub fn step_seconds(&self) -> f32 {
-        60.0 / self.bpm.max(1.0)
+        (60.0 / self.bpm.max(1.0)) / self.quantize.division()
     }
 
-    pub fn pose(&self, step: usize) -> Option<&Pose> {
-        self.steps.get(step).and_then(|s| s.as_ref())
-    }
-
-    /// How many steps hold a pose.
-    pub fn filled(&self) -> usize {
-        self.steps.iter().filter(|s| s.is_some()).count()
-    }
-
-    pub fn select(&mut self, step: usize) {
-        if step < self.steps.len() {
-            self.selected = step;
-        }
-    }
-
-    pub fn set_pose(&mut self, step: usize, pose: Pose) {
-        if let Some(slot) = self.steps.get_mut(step) {
-            *slot = Some(pose);
-        }
-    }
-
-    /// Write one joint into a step, keeping everything else the step held.
+    /// Whether this track sounds right now.
     ///
-    /// This is what live recording uses. Replacing the whole pose would
-    /// discard the parts of the pattern the operator authored earlier and is
-    /// not currently touching — an overdub that erases the take.
-    pub fn overdub(&mut self, step: usize, puppet: PuppetId, joint: JointId, at: Vec2) {
-        let Some(slot) = self.steps.get_mut(step) else {
-            return;
-        };
-        let pose = slot.get_or_insert_with(Pose::new);
-        match pose
-            .iter_mut()
-            .find(|(p, j, _)| *p == puppet && *j == joint)
-        {
-            Some((_, _, existing)) => *existing = at,
-            None => pose.push((puppet, joint, at)),
+    /// **Solo wins over mute, globally.** With any track soloed the others
+    /// are silent whatever their own mute says — which is what makes solo
+    /// usable mid-show: one click isolates a limb and one click restores the
+    /// pattern exactly as it was.
+    pub fn audible(&self, track: &Track) -> bool {
+        if self.tracks.iter().any(|t| t.solo) {
+            track.solo
+        } else {
+            !track.mute
         }
     }
 
-    pub fn clear_step(&mut self, step: usize) {
-        if let Some(slot) = self.steps.get_mut(step) {
-            *slot = None;
+    /// Cycle a cell: empty → full → ghost → empty.
+    pub fn cycle(&mut self, track: usize, step: usize) {
+        if let Some(t) = self.tracks.get_mut(track)
+            && let Some(v) = t.steps.get_mut(step)
+        {
+            *v = if *v == 0.0 {
+                FULL
+            } else if *v == FULL {
+                GHOST
+            } else {
+                0.0
+            };
+        }
+    }
+
+    pub fn clear_cell(&mut self, track: usize, step: usize) {
+        if let Some(t) = self.tracks.get_mut(track)
+            && let Some(v) = t.steps.get_mut(step)
+        {
+            *v = 0.0;
+        }
+    }
+
+    pub fn clear_track(&mut self, track: usize) {
+        if let Some(t) = self.tracks.get_mut(track) {
+            t.steps.iter_mut().for_each(|v| *v = 0.0);
         }
     }
 
     pub fn clear_all(&mut self) {
-        for slot in &mut self.steps {
-            *slot = None;
+        for t in &mut self.tracks {
+            t.steps.iter_mut().for_each(|v| *v = 0.0);
         }
     }
 
-    /// The last step holding a pose, if any.
-    fn last_filled(&self) -> Option<usize> {
-        self.steps.iter().rposition(|s| s.is_some())
-    }
-
-    /// Grow or shrink the grid.
+    /// Change the visible length.
     ///
-    /// **Shrinking never destroys a pose.** If a step beyond the requested
-    /// length holds one, the grid stops there instead: the alternative is a
-    /// size button that silently deletes work.
+    /// **Shrinking never destroys a hit.** The steps beyond the new length
+    /// keep their values and come back when the grid grows again: a length
+    /// button that quietly deleted the second half of a pattern would be a
+    /// button nobody dares press twice.
     pub fn set_len(&mut self, n: usize) {
-        let floor = self.last_filled().map(|i| i + 1).unwrap_or(1);
-        let n = n.max(1).max(floor);
-        self.steps.resize(n, None);
-        if self.position >= n as f32 {
+        self.len = n.max(1);
+        let need = self.len;
+        for t in &mut self.tracks {
+            if t.steps.len() < need {
+                t.steps.resize(need, 0.0);
+            }
+        }
+        if self.position >= self.len as f32 {
             self.position = 0.0;
         }
-        self.selected = self.selected.min(n - 1);
     }
 
-    /// Whether `set_len(n)` would be refused, and by which step — so the panel
-    /// can say so rather than appearing to ignore the click.
-    pub fn len_blocked_by(&self, n: usize) -> Option<usize> {
-        let floor = self.last_filled().map(|i| i + 1)?;
-        (n < floor).then_some(floor)
+    pub fn select(&mut self, track: usize) {
+        if track < self.tracks.len() {
+            self.selected = track;
+        }
+    }
+
+    pub fn add_track(
+        &mut self,
+        name: impl Into<String>,
+        puppet: PuppetId,
+        joint: JointId,
+        dir: Vec2,
+    ) {
+        let ink = TRACK_INKS[self.tracks.len() % TRACK_INKS.len()];
+        let mut track = Track::new(name, puppet, joint, dir, ink);
+        track.steps.resize(self.len.max(track.steps.len()), 0.0);
+        self.tracks.push(track);
+        self.selected = self.tracks.len() - 1;
+    }
+
+    pub fn remove_track(&mut self, track: usize) {
+        if track < self.tracks.len() {
+            self.tracks.remove(track);
+            self.selected = self.selected.min(self.tracks.len().saturating_sub(1));
+        }
     }
 }
 
 /// Where the sequencer writes: before the hand, so the hand wins.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SequencerSet {
-    /// Steps → targets.
     Play,
 }
 
@@ -210,298 +313,259 @@ impl Plugin for SequencerPlugin {
     }
 }
 
-/// Walk the grid, record into it, and glide toward what each step says.
-///
-/// **The target moves; it does not jump.** A driven target snaps its joint
-/// exactly (that is what makes dragging feel direct), so writing the next
-/// step's pose in one frame would teleport every posed joint — a cut, not an
-/// animation. Instead the written target slides from where the puppet was at
-/// the step edge to where the step says, across the step's own duration. The
-/// springs then lag behind that sliding target, and the lag is the weight.
+/// Walk the grid and deliver whatever each step says.
 pub fn run_sequencer(
     time: Res<Time>,
     mut seq: ResMut<Sequencer>,
-    mut targets: ResMut<JointTargets>,
+    doc: Res<DocumentRes>,
     held: Res<HeldJoint>,
-    solvers: Query<(
+    mut solvers: Query<(
         &crate::components::PuppetRoot,
         &crate::components::CompiledRigRef,
-        &crate::components::PuppetSolver,
+        &mut crate::components::PuppetSolver,
     )>,
 ) {
-    if !seq.running || seq.steps.is_empty() {
+    // The flash lasts one frame and is cleared whether or not the transport
+    // is running, so stopping mid-bar does not leave a row lit.
+    let track_count = seq.tracks.len();
+    seq.fired.clear();
+    seq.fired.resize(track_count, 0.0);
+
+    // TAP is independent of the transport: holding it plays the limb whether
+    // or not a pattern is running, which is how an operator finds the sound
+    // before committing it to a step.
+    let tapping = std::mem::take(&mut seq.tapping);
+    if tapping {
+        let step = seq.current();
+        let selected = seq.selected;
+        if let Some(track) = seq.tracks.get(selected) {
+            let (puppet, joint, dir) = (track.puppet, track.joint, track.dir);
+            strike(&doc, &held, &mut solvers, puppet, joint, dir, FULL);
+            if let Some(f) = seq.fired.get_mut(selected) {
+                *f = FULL;
+            }
+        }
+        if seq.armed
+            && seq.running
+            && let Some(t) = seq.tracks.get_mut(selected)
+        {
+            // Quantised to the step under the playhead rather than written
+            // at the exact instant: this is a grid, and a hit half a step
+            // late is a hit in the wrong place.
+            if let Some(v) = t.steps.get_mut(step) {
+                *v = FULL;
+            }
+        }
+    }
+
+    if !seq.running || seq.tracks.is_empty() {
         return;
     }
 
     let dt = time.delta_secs();
-    let len = seq.len();
+    let len = seq.len;
     let before = seq.current();
     seq.position = (seq.position + dt / seq.step_seconds()) % len as f32;
     let after = seq.current();
 
     // `!=` rather than `>`: the pattern wraps, and the wrap is a step edge
     // like any other — the one that starts the bar.
-    if after != before {
-        // Record first, then glide. Capturing the pose the operator is
-        // holding and then gliding from it is a visual no-op, which is what
-        // makes live recording feel like it is not disturbing the show.
-        let now = capture_from(solvers.iter().map(|(r, rig, s)| (r.0, rig, s)));
-
-        // **Arm records what the hand is playing, not the whole body.**
-        //
-        // Writing the full snapshot into each step looked right and was
-        // wrong: every joint the operator was *not* touching got pinned to
-        // wherever it happened to be, so the next step recorded that same
-        // frozen body, and the one after that. Across a bar the only thing
-        // that ever differed was the limb still in the hand — which is
-        // exactly the "only the last change gets saved" the operator saw.
-        //
-        // Overdub instead, the way a drum machine does: merge the held
-        // joint into whatever the step already held, and leave the rest of
-        // the pattern alone. Full-body poses are what EDIT is for.
-        if seq.armed
-            && let Some((puppet, joint)) = held.0
-            && let Some((_, _, at)) = now
-                .iter()
-                .find(|(p, j, _)| *p == puppet && *j == joint)
-                .copied()
-        {
-            seq.overdub(after, puppet, joint, at);
-            seq.selected = after;
-        }
-        seq.glide_from = now;
-
-        // Take back the previous step's writes, but never the held joint:
-        // that target belongs to the hand.
-        for (puppet, joint) in std::mem::take(&mut seq.driven_last) {
-            if held.0 != Some((puppet, joint)) {
-                targets.clear_joint(puppet, joint);
-            }
-        }
+    if after == before {
+        return;
     }
 
-    let Some(to) = seq.pose(after).cloned() else {
-        // A rest. Nothing is written, so the springs carry on from wherever
-        // the last step left the puppet — which is the pattern too.
-        return;
-    };
-
-    // Ease in and out rather than a constant slide: a linear target arrives
-    // and stops dead, and the puppet's own overshoot is the only thing that
-    // hides it. Smoothstep puts the acceleration where a limb would have it.
-    let now = glide(&seq.glide_from, &to, seq.step_fraction());
-    seq.driven_last.clear();
-    for (puppet, joint, at) in now {
-        if held.0 == Some((puppet, joint)) {
+    for i in 0..seq.tracks.len() {
+        let Some(track) = seq.tracks.get(i) else {
+            continue;
+        };
+        let velocity = track.steps.get(after).copied().unwrap_or(0.0);
+        if velocity <= 0.0 || !seq.audible(track) {
             continue;
         }
-        targets.set(puppet, joint, at);
-        seq.driven_last.push((puppet, joint));
-    }
-}
-
-/// Hermite ease, 0..1. Zero slope at both ends.
-pub fn smoothstep(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * (3.0 - 2.0 * t)
-}
-
-/// Where the written target sits `t` of the way from one pose to another.
-///
-/// A joint the destination names but the start does not is held at its
-/// destination from the first frame: there is nowhere to glide it from, and
-/// guessing rest would yank it across the stage.
-pub fn glide(from: &Pose, to: &Pose, t: f32) -> Pose {
-    let e = smoothstep(t);
-    to.iter()
-        .map(|(puppet, joint, at)| {
-            let start = from
-                .iter()
-                .find(|(p, j, _)| p == puppet && j == joint)
-                .map(|(_, _, v)| *v)
-                .unwrap_or(*at);
-            (*puppet, *joint, start + (*at - start) * e)
-        })
-        .collect()
-}
-
-/// The puppet's pose right now, in image pixels, as the solver holds it.
-///
-/// Takes an iterator rather than a `Query` so both the sequencer's own system
-/// and the editor's posing path can call it: they hold different queries over
-/// the same components, and duplicating the walk would be a second place for
-/// the dense order to be read wrongly.
-pub fn capture_from<'a>(
-    items: impl Iterator<
-        Item = (
-            PuppetId,
-            &'a crate::components::CompiledRigRef,
-            &'a crate::components::PuppetSolver,
-        ),
-    >,
-) -> Pose {
-    let mut pose = Pose::new();
-    for (id, rig, solver) in items {
-        let positions = solver.0.positions();
-        // Through the rig's dense order, never by the numeric value of a
-        // `JointId`: those two agree until a joint is deleted, and then every
-        // pose in the pattern would refer to its neighbour.
-        for (dense, at) in positions.iter().enumerate() {
-            if let Some(joint) = rig.0.joint_id(dense) {
-                pose.push((id, joint, *at));
-            }
+        let (puppet, joint, dir) = (track.puppet, track.joint, track.dir);
+        strike(&doc, &held, &mut solvers, puppet, joint, dir, velocity);
+        if let Some(f) = seq.fired.get_mut(i) {
+            *f = velocity;
         }
     }
-    pose
+}
+
+/// Deliver one hit: the joint and everything below it, softening with depth.
+#[allow(clippy::too_many_arguments)]
+fn strike(
+    doc: &DocumentRes,
+    held: &HeldJoint,
+    solvers: &mut Query<(
+        &crate::components::PuppetRoot,
+        &crate::components::CompiledRigRef,
+        &mut crate::components::PuppetSolver,
+    )>,
+    puppet: PuppetId,
+    joint: JointId,
+    dir: Vec2,
+    velocity: f32,
+) {
+    let Some(animus_core::doc::PuppetKind::Mesh(mesh)) =
+        doc.0.puppets.get(&puppet).map(|p| &p.kind)
+    else {
+        return;
+    };
+    // Derived from the bone graph, the same way forward kinematics derives
+    // it, so what a hit carries and what a rotation carries are the same set
+    // of joints. Two answers to that question would be one too many.
+    let tree = animus_core::skeleton::rig_tree(&mesh.skeleton);
+    let chain: Vec<(JointId, usize)> = std::iter::once((joint, 0))
+        .chain(depths(&tree, joint))
+        .collect();
+
+    for (root, rig, mut solver) in solvers.iter_mut() {
+        // The query is over every puppet on the stage; only one of them is
+        // the track's. Matching on the root rather than on "does this rig
+        // happen to know that joint id" matters once two puppets share id
+        // numbering, which they do — ids are per-document, not per-puppet.
+        if root.0 != puppet {
+            continue;
+        }
+        for (id, depth) in &chain {
+            if held.0 == Some((puppet, *id)) {
+                // The hand outranks the pattern.
+                continue;
+            }
+            let Some(dense) = rig.0.joint_index(*id) else {
+                continue;
+            };
+            solver
+                .0
+                .kick(dense, dir * velocity * FALLOFF.powi(*depth as i32));
+        }
+    }
+}
+
+/// Every joint below `from`, paired with how far below it is.
+fn depths(tree: &animus_core::skeleton::RigTree, from: JointId) -> Vec<(JointId, usize)> {
+    let mut out = Vec::new();
+    let mut depth: HashMap<JointId, usize> = HashMap::new();
+    depth.insert(from, 0);
+    for id in tree.descendants(from) {
+        let d = tree
+            .parent(id)
+            .and_then(|p| depth.get(&p).copied())
+            .unwrap_or(0)
+            + 1;
+        depth.insert(id, d);
+        out.push((id, d));
+    }
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const P: PuppetId = PuppetId(1);
-    const J: JointId = JointId(2);
-    const K: JointId = JointId(9);
-
-    fn pose_at(x: f32) -> Pose {
-        vec![(P, J, Vec2::new(x, 0.0)), (P, K, Vec2::new(0.0, x))]
+    fn track(name: &str) -> Track {
+        Track::new(
+            name,
+            PuppetId(1),
+            JointId(1),
+            Vec2::new(1.0, 0.0),
+            TRACK_INKS[0],
+        )
     }
 
-    fn grid(n: usize, filled: &[(usize, f32)]) -> Sequencer {
-        let mut s = Sequencer::default();
-        s.set_len(n);
-        for (i, x) in filled {
-            s.set_pose(*i, pose_at(*x));
+    /// **Solo wins over mute, globally.** With one track soloed the others
+    /// go quiet whatever their own mute says, so one click isolates a limb
+    /// and one click restores the pattern exactly as it was.
+    #[test]
+    fn solo_silences_every_track_that_is_not_soloed() {
+        let mut seq = Sequencer::default();
+        seq.tracks.push(track("a"));
+        seq.tracks.push(track("b"));
+        seq.tracks.push(track("c"));
+        seq.tracks[2].mute = true;
+
+        assert!(seq.audible(&seq.tracks[0]), "nothing soloed: mute decides");
+        assert!(!seq.audible(&seq.tracks[2]));
+
+        seq.tracks[1].solo = true;
+        assert!(!seq.audible(&seq.tracks[0]), "not soloed, so silent");
+        assert!(seq.audible(&seq.tracks[1]));
+        assert!(
+            !seq.audible(&seq.tracks[2]),
+            "a muted track stays silent when another is soloed"
+        );
+    }
+
+    #[test]
+    fn a_cell_cycles_empty_full_ghost_empty() {
+        let mut seq = Sequencer::default();
+        seq.tracks.push(track("a"));
+        assert_eq!(seq.tracks[0].steps[3], 0.0);
+        seq.cycle(0, 3);
+        assert_eq!(seq.tracks[0].steps[3], FULL);
+        seq.cycle(0, 3);
+        assert_eq!(seq.tracks[0].steps[3], GHOST);
+        seq.cycle(0, 3);
+        assert_eq!(seq.tracks[0].steps[3], 0.0);
+    }
+
+    /// **Shrinking the grid never destroys a hit.** A length button that
+    /// quietly deleted the second half of a pattern is a button nobody
+    /// dares press twice.
+    #[test]
+    fn shrinking_the_grid_keeps_the_steps_beyond_it() {
+        let mut seq = Sequencer::default();
+        seq.tracks.push(track("a"));
+        seq.set_len(32);
+        seq.cycle(0, 30);
+        assert_eq!(seq.tracks[0].steps[30], FULL);
+
+        seq.set_len(8);
+        assert_eq!(
+            seq.tracks[0].steps[30], FULL,
+            "the hit must survive the round trip"
+        );
+        seq.set_len(32);
+        assert_eq!(seq.tracks[0].steps[30], FULL);
+    }
+
+    /// A hit reaches down the chain and softens as it goes. Monotonic, so
+    /// no joint below ever gets a harder shove than the one it hangs from.
+    #[test]
+    fn the_hit_softens_with_every_step_down_the_chain() {
+        let mut last = f32::INFINITY;
+        for depth in 0..6 {
+            let f = FALLOFF.powi(depth);
+            assert!(f < last, "depth {depth} did not soften");
+            assert!(f > 0.0, "and never reverses");
+            last = f;
         }
-        s
-    }
-
-    /// Advance the transport by hand, without a `Time`, and report the step
-    /// edges crossed.
-    fn advance(seq: &mut Sequencer, dt: f32) -> Option<usize> {
-        let len = seq.len();
-        let before = seq.current();
-        seq.position = (seq.position + dt / seq.step_seconds()) % len as f32;
-        let after = seq.current();
-        (after != before).then_some(after)
     }
 
     #[test]
-    fn a_step_is_one_beat_at_the_tempo() {
-        let mut s = grid(8, &[]);
-        s.bpm = 120.0;
-        assert!((s.step_seconds() - 0.5).abs() < 1e-6);
-        s.bpm = 60.0;
-        assert!((s.step_seconds() - 1.0).abs() < 1e-6);
+    fn quantize_divides_the_beat() {
+        let mut seq = Sequencer {
+            bpm: 120.0,
+            quantize: Quantize::Quarter,
+            ..Sequencer::default()
+        };
+        let quarter = seq.step_seconds();
+        seq.quantize = Quantize::Sixteenth;
+        assert!(
+            (quarter / seq.step_seconds() - 4.0).abs() < 1e-4,
+            "a sixteenth is a quarter of a quarter"
+        );
     }
 
-    /// The grid divides time into equal parts, and the playhead visits every
-    /// one of them in order.
     #[test]
-    fn the_playhead_visits_every_step_in_order_and_wraps() {
-        let mut s = grid(4, &[]);
-        s.bpm = 120.0; // half a second per step
-        s.running = true;
-
-        // Six seconds at half a second per step is twelve edges, so the
-        // first eight are there whatever the float arithmetic does at the
-        // boundary. Sizing the loop to land exactly on the last edge is how
-        // this test failed the first time.
-        let mut visited = Vec::new();
-        for _ in 0..600 {
-            if let Some(step) = advance(&mut s, 0.01) {
-                visited.push(step);
-            }
+    fn tracks_take_different_colours_until_the_palette_runs_out() {
+        let mut seq = Sequencer::default();
+        for i in 0..TRACK_INKS.len() {
+            seq.add_track(format!("t{i}"), PuppetId(1), JointId(1), Vec2::X);
         }
-        assert!(
-            visited.len() >= 8,
-            "only {} edges: {visited:?}",
-            visited.len()
-        );
-        assert_eq!(&visited[..8], &[1, 2, 3, 0, 1, 2, 3, 0], "got {visited:?}");
-    }
-
-    /// Shrinking must not eat a pose.
-    #[test]
-    fn shrinking_stops_at_the_last_posed_step() {
-        let mut s = grid(16, &[(0, 1.0), (12, 2.0)]);
-        s.set_len(8);
-        assert_eq!(s.len(), 13, "step 12 holds a pose, so the grid stops there");
-        assert!(s.pose(12).is_some());
-        assert_eq!(s.len_blocked_by(8), Some(13));
-
-        s.clear_step(12);
-        s.set_len(8);
-        assert_eq!(s.len(), 8);
-        assert!(s.pose(0).is_some(), "and the pose that fitted survived");
-    }
-
-    /// The selected step has to stay inside the grid, or the panel would
-    /// point at a step that no longer exists.
-    #[test]
-    fn shrinking_pulls_the_selection_back_inside() {
-        let mut s = grid(16, &[]);
-        s.select(15);
-        s.set_len(4);
-        assert_eq!(s.selected, 3);
-    }
-
-    #[test]
-    fn a_rest_is_not_a_missing_pose() {
-        let s = grid(4, &[(0, 1.0), (2, 2.0)]);
-        assert_eq!(s.filled(), 2);
-        assert!(
-            s.pose(1).is_none(),
-            "step 1 is a rest, and that is a choice"
-        );
-    }
-
-    // ── the glide ──────────────────────────────────────────────────────
-
-    /// **The bug this closes: steps cut.**
-    ///
-    /// A driven target snaps its joint exactly, so writing the destination in
-    /// one frame teleports every posed joint. The written target has to move
-    /// across the step instead — mid-step it must be *between* the two poses,
-    /// not at either end.
-    #[test]
-    fn a_step_glides_rather_than_cutting() {
-        let from = vec![(P, J, Vec2::new(0.0, 0.0))];
-        let to = vec![(P, J, Vec2::new(100.0, 0.0))];
-
-        let start = glide(&from, &to, 0.0)[0].2.x;
-        let middle = glide(&from, &to, 0.5)[0].2.x;
-        let end = glide(&from, &to, 1.0)[0].2.x;
-
-        assert!(start.abs() < 1e-4, "the step opens where the puppet was");
-        assert!(
-            middle > 5.0 && middle < 95.0,
-            "halfway must be between the poses, got {middle}"
-        );
-        assert!((end - 100.0).abs() < 1e-4, "and closes on the pose");
-    }
-
-    /// Ease at both ends, so the target does not arrive and stop dead.
-    #[test]
-    fn the_glide_starts_and_ends_slowly() {
-        let d = |a: f32, b: f32| (smoothstep(b) - smoothstep(a)).abs();
-        let edge = d(0.0, 0.1).max(d(0.9, 1.0));
-        let centre = d(0.45, 0.55);
-        assert!(
-            centre > edge * 2.0,
-            "the middle should move faster than the ends: {centre} vs {edge}"
-        );
-    }
-
-    /// A joint that appears only in the destination has nowhere to glide
-    /// from, so it is held there rather than yanked across the stage from a
-    /// guess.
-    #[test]
-    fn a_joint_the_start_does_not_name_is_held_at_its_destination() {
-        let from = vec![(P, J, Vec2::ZERO)];
-        let to = vec![(P, J, Vec2::new(10.0, 0.0)), (P, K, Vec2::new(50.0, 50.0))];
-        let mid = glide(&from, &to, 0.5);
-        let k = mid.iter().find(|(_, j, _)| *j == K).unwrap().2;
-        assert_eq!(k, Vec2::new(50.0, 50.0));
+        let inks: Vec<_> = seq.tracks.iter().map(|t| t.ink).collect();
+        let mut unique = inks.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), TRACK_INKS.len(), "no two rows share a colour");
     }
 }

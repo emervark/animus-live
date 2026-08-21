@@ -83,7 +83,6 @@ pub fn apply_live_rotations(
     held: Res<HeldJoint>,
     mut targets: ResMut<JointTargets>,
     mut driven: ResMut<RotationDriven>,
-    mut seq: ResMut<animus_runtime::Sequencer>,
     solvers: Query<(
         &animus_runtime::PuppetRoot,
         &animus_runtime::CompiledRigRef,
@@ -142,15 +141,6 @@ pub fn apply_live_rotations(
             let turned = pivot_live + Vec2::new(d.x * cos - d.y * sin, d.x * sin + d.y * cos);
             targets.set(puppet, joint, turned);
             driven.0.push((puppet, joint));
-
-            // In EDIT the step is the thing being authored, so a rotation
-            // has to land in it the same way a drag does. Overdubbed rather
-            // than written whole: the operator may have posed other limbs by
-            // hand already, and replacing the pose would throw that away.
-            if state.mode == crate::state::EditMode::Edit {
-                let step = seq.selected;
-                seq.overdub(step, puppet, joint, turned);
-            }
         }
     }
 }

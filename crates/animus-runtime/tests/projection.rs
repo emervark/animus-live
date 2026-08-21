@@ -450,144 +450,87 @@ fn a_document_that_arrives_whole_is_projected_without_being_asked() {
 
 // ── the sequencer actually drives the puppet ───────────────────────────
 
-/// **Poses authored in EDIT must play in PERFORM.**
+/// **A step must actually shove the puppet.**
 ///
-/// The whole instrument rests on this: a step holds a pose, the transport
-/// walks the steps, and the targets follow. If this does not move, nothing
-/// the operator authored is ever heard.
+/// The whole instrument rests on this: a track holds hits, the transport
+/// walks the grid, and when a hit fires the limb leaves rest at speed. If
+/// this does not move, nothing the operator programmed is ever seen.
 #[test]
-fn a_running_sequencer_drives_the_targets_toward_each_step() {
-    use animus_runtime::{JointTargets, Sequencer};
+fn a_fired_step_gives_the_joint_velocity_and_the_physics_takes_it_back() {
+    use animus_runtime::{HeldJoint, Sequencer, Track};
 
     let mut app = app_with(document());
-    app.init_resource::<JointTargets>()
-        .init_resource::<animus_runtime::HeldJoint>()
+    app.init_resource::<HeldJoint>()
         .add_plugins(animus_runtime::SequencerPlugin);
     push(&mut app, DocChange::PuppetAdded(PUPPET));
     app.update();
 
-    // Two very different poses, two steps apart.
-    let joint = {
-        let world = app.world_mut();
-        let rig = world
-            .query::<&animus_runtime::CompiledRigRef>()
-            .iter(world)
-            .next()
-            .expect("a rig")
-            .0
-            .clone();
-        rig.joint_id(0).expect("a joint")
-    };
+    let start = joint_positions(&mut app);
 
     {
         let mut seq = app.world_mut().resource_mut::<Sequencer>();
-        seq.set_len(4);
-        seq.set_pose(0, vec![(PUPPET, joint, Vec2::new(0.0, 0.0))]);
-        seq.set_pose(2, vec![(PUPPET, joint, Vec2::new(500.0, 0.0))]);
+        seq.set_len(8);
+        seq.tracks.push(Track::new(
+            "arm",
+            PUPPET,
+            J_A,
+            Vec2::new(60.0, 0.0),
+            animus_runtime::TRACK_INKS[0],
+        ));
+        // A hit on every step, so an edge is crossed whenever one is.
+        seq.tracks[0]
+            .steps
+            .iter_mut()
+            .for_each(|v| *v = animus_runtime::FULL);
         // Fast steps and a real sleep below: a headless `app.update()` loop
         // has microsecond frames, so wall-clock time is what the transport
         // actually reads.
-        seq.bpm = 6000.0; // 10ms per step
+        seq.bpm = 6000.0;
         seq.running = true;
     }
 
-    let mut seen: Vec<Vec2> = Vec::new();
-    for _ in 0..120 {
+    let mut moved: f32 = 0.0;
+    for _ in 0..60 {
         std::thread::sleep(std::time::Duration::from_millis(2));
         app.update();
-        if let Some(v) = app
-            .world()
-            .resource::<JointTargets>()
-            .0
-            .get(&(PUPPET, joint))
-        {
-            seen.push(*v);
-        }
+        let now = joint_positions(&mut app);
+        moved = moved.max(
+            now.iter()
+                .zip(&start)
+                .map(|(a, b)| (*a - *b).length())
+                .fold(0.0_f32, f32::max),
+        );
     }
 
     assert!(
-        !seen.is_empty(),
-        "the sequencer never wrote a target: nothing the operator posed can play"
-    );
-    let spread = seen.iter().map(|v| v.x).fold(f32::NEG_INFINITY, f32::max)
-        - seen.iter().map(|v| v.x).fold(f32::INFINITY, f32::min);
-    assert!(
-        spread > 100.0,
-        "the target barely moved ({spread:.1}px): the steps are not being played"
+        moved > 1.0,
+        "the puppet barely moved ({moved:.2}px): steps are not being delivered"
     );
 }
 
-/// **Live recording overdubs; it does not overwrite.**
+/// **A hit carries the whole limb, softening as it goes.**
 ///
-/// Arming used to write the whole body into every step it crossed, which
-/// pinned every joint the hand was not touching to wherever it happened to
-/// be. The next step then recorded that same frozen body, and the one after
-/// that — so across a bar the only thing that ever differed was the limb
-/// still in the hand. That is the "only the last change gets saved" an
-/// operator sees, and it is what this test exists to keep out.
+/// A shoulder that moved while its own hand stayed put is not a shoulder,
+/// it is a dislocation. But the hand has to arrive later and softer, or the
+/// limb reads as one rigid plank.
 #[test]
-fn arming_records_the_played_joint_and_leaves_the_rest_of_the_step_alone() {
-    use animus_runtime::{HeldJoint, JointTargets, Sequencer};
-
-    let mut app = app_with(document());
-    app.init_resource::<JointTargets>()
-        .init_resource::<HeldJoint>()
-        .add_plugins(animus_runtime::SequencerPlugin);
-    push(&mut app, DocChange::PuppetAdded(PUPPET));
-    app.update();
-
-    let (played, untouched) = {
-        let world = app.world_mut();
-        let rig = world
-            .query::<&animus_runtime::CompiledRigRef>()
-            .iter(world)
-            .next()
-            .expect("a rig")
-            .0
-            .clone();
-        (rig.joint_id(0).expect("a joint"), rig.joint_id(1).unwrap())
-    };
-
-    // A step the operator authored earlier, holding a joint they are about
-    // to leave alone.
-    let authored = Vec2::new(-300.0, 44.0);
-    {
-        let mut seq = app.world_mut().resource_mut::<Sequencer>();
-        seq.set_len(4);
-        for step in 0..4 {
-            seq.set_pose(step, vec![(PUPPET, untouched, authored)]);
-        }
-        seq.bpm = 6000.0;
-        seq.running = true;
-        seq.armed = true;
+fn a_hit_reaches_down_the_chain_and_never_harder_than_its_parent() {
+    let mut last = f32::INFINITY;
+    for depth in 0..6 {
+        let f = animus_runtime::FALLOFF.powi(depth);
+        assert!(f < last, "depth {depth} did not soften");
+        assert!(f > 0.0, "and never reverses");
+        last = f;
     }
-    // The hand is on one joint, and only that joint may be recorded.
-    app.world_mut().resource_mut::<HeldJoint>().0 = Some((PUPPET, played));
+}
 
-    for _ in 0..120 {
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        app.update();
-    }
-
-    let seq = app.world().resource::<Sequencer>();
-    for step in 0..4 {
-        let pose = seq
-            .pose(step)
-            .unwrap_or_else(|| panic!("step {step} empty"));
-        let kept = pose
-            .iter()
-            .find(|(_, j, _)| *j == untouched)
-            .map(|(_, _, v)| *v);
-        assert_eq!(
-            kept,
-            Some(authored),
-            "step {step}: recording overwrote a joint the hand never touched"
-        );
-    }
-    assert!(
-        (0..4).any(|s| seq
-            .pose(s)
-            .is_some_and(|p| p.iter().any(|(_, j, _)| *j == played))),
-        "the joint the operator was actually holding was never recorded"
-    );
+/// Every joint's live position, for comparing before and after.
+fn joint_positions(app: &mut App) -> Vec<Vec2> {
+    let world = app.world_mut();
+    world
+        .query::<&animus_runtime::PuppetSolver>()
+        .iter(world)
+        .next()
+        .map(|s| s.0.positions().to_vec())
+        .unwrap_or_default()
 }

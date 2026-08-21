@@ -26,8 +26,8 @@ pub use project::{
     puppet_pivot, sync_document,
 };
 pub use sequencer::{
-    Pose, STEP_COUNTS, Sequencer, SequencerPlugin, SequencerSet, capture_from, glide,
-    run_sequencer, smoothstep,
+    FALLOFF, FULL, GHOST, Quantize, STEP_COUNTS, Sequencer, SequencerPlugin, SequencerSet,
+    TRACK_INKS, Track, run_sequencer,
 };
 pub use skinning::{BuildError, SkinnedMeshBuild, build_inverse_bindposes, build_skinned_mesh};
 pub use solve::{HeldJoint, JointTargets, SolveSet, SolverPanic, SolverPlugin, WritebackSet};

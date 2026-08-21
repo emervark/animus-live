@@ -24,14 +24,27 @@ const STRIP_COLLAPSED: f32 = 46.0;
 /// panel names the act, the writer system performs it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StepAction {
-    /// Choose the step being edited, and the one a recording writes first.
-    Select(usize),
-    /// Empty a step. It becomes a rest.
-    Clear(usize),
+    /// Choose the track TAP writes into.
+    SelectTrack(usize),
+    /// Empty → full → ghost → empty.
+    Cycle(usize, usize),
+    /// Right-click: straight back to empty.
+    ClearCell(usize, usize),
+    ClearTrack(usize),
     ClearAll,
+    /// Give the selected joint a row of its own.
+    AddTrack,
+    RemoveTrack(usize),
+    ToggleMute(usize),
+    ToggleSolo(usize),
+    /// Held this frame: hit the selected track, and write it if armed.
+    Tap,
+    /// Stop and return to the top of the bar.
+    Stop,
     SetRunning(bool),
     SetArmed(bool),
     SetLength(usize),
+    SetQuantize(animus_runtime::Quantize),
     SetBpm(f32),
     /// Fold the grid down to its transport row.
     ToggleCollapsed,
@@ -1337,115 +1350,378 @@ fn separator(ui: &mut egui::Ui) {
 ///
 /// A panel of the window rather than a tab in the dock, because a bar of
 /// steps wants the full width and the dock's splits would not give it one.
+/// The sequencer: transport across the top, one row per limb below.
+///
+/// The comp's shape, and the shape a drum machine has had since the 808 —
+/// because it is the shape that lets an operator read a rhythm rather than
+/// decode one.
 pub fn steps_strip(
     ui: &mut egui::Ui,
     seq: &animus_runtime::Sequencer,
     mode: EditMode,
-    puppet: &str,
+    puppet_name: &str,
     collapsed: bool,
     actions: &mut Vec<StepAction>,
 ) {
-    transport_row(ui, seq, mode, puppet, actions);
+    transport_row(ui, seq, mode, puppet_name, collapsed, actions);
     if collapsed {
         return;
     }
     ui.add_space(theme::S_SM);
+
+    if seq.tracks.is_empty() {
+        ui.label(
+            egui::RichText::new("No tracks yet.")
+                .size(theme::FS_CONTROL)
+                .color(theme::DIM),
+        );
+        ui.add_space(theme::S_XS);
+        ui.label(
+            egui::RichText::new(
+                "Select a joint, then press + to give that limb a row. Each cell is one hit.",
+            )
+            .size(theme::FS_SM)
+            .color(theme::HINT),
+        );
+        return;
+    }
+
     egui::ScrollArea::vertical()
-        .id_salt("step_grid")
+        .id_salt("track_scroll")
         .auto_shrink([false, false])
-        .show(ui, |ui| step_grid(ui, seq, mode, actions));
+        .show(ui, |ui| {
+            ruler(ui, seq);
+            for i in 0..seq.tracks.len() {
+                track_row(ui, seq, i, actions);
+            }
+        });
 }
 
-/// Transport on the left, grid settings on the right.
+/// The width the track's name column takes, from the comp.
+const NAME_W: f32 = 190.0;
+/// The two mute/solo buttons at the end of a row.
+const TAIL_W: f32 = 52.0;
+
+/// Where the cells start and how wide each one is, so the ruler and every
+/// row agree to the pixel.
+fn cell_metrics(ui: &egui::Ui, len: usize) -> (f32, f32) {
+    let gap = 3.0;
+    let total = (ui.available_width() - NAME_W - TAIL_W).max(80.0);
+    let each = ((total - gap * (len.saturating_sub(1)) as f32) / len.max(1) as f32).max(6.0);
+    (each, gap)
+}
+
+/// Step numbers over the grid, with the downbeats lit.
+fn ruler(ui: &mut egui::Ui, seq: &animus_runtime::Sequencer) {
+    let (each, gap) = cell_metrics(ui, seq.len);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.add_space(NAME_W);
+        for i in 0..seq.len {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(each, 12.0), egui::Sense::hover());
+            let here = seq.running && i == seq.current();
+            let downbeat = i % 4 == 0;
+            let ink = if here {
+                theme::GO_GREEN
+            } else if downbeat {
+                theme::SUB
+            } else {
+                theme::GHOST
+            };
+            // Only the downbeats are numbered. Sixteen numbers in a row is a
+            // ruler nobody reads; four is a bar you can count.
+            if downbeat || here {
+                let galley = ui.painter().layout_no_wrap(
+                    format!("{}", i + 1),
+                    egui::FontId::monospace(theme::FS_MICRO),
+                    ink,
+                );
+                ui.painter().galley(
+                    egui::pos2(rect.center().x - galley.size().x * 0.5, rect.min.y),
+                    galley,
+                    ink,
+                );
+            }
+        }
+    });
+    ui.add_space(theme::S_XS);
+}
+
+/// One limb's row: what it is, when it gets hit, and whether it sounds.
+fn track_row(
+    ui: &mut egui::Ui,
+    seq: &animus_runtime::Sequencer,
+    index: usize,
+    actions: &mut Vec<StepAction>,
+) {
+    let Some(track) = seq.tracks.get(index) else {
+        return;
+    };
+    let selected = seq.selected == index;
+    let audible = seq.audible(track);
+    let ink = egui::Color32::from_rgb(track.ink[0], track.ink[1], track.ink[2]);
+    let fired = seq.fired.get(index).copied().unwrap_or(0.0);
+    let (each, gap) = cell_metrics(ui, seq.len);
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = gap;
+
+        // ── the name column ──
+        let (name_rect, name) =
+            ui.allocate_exact_size(egui::vec2(NAME_W, 26.0), egui::Sense::click());
+        if name.clicked() {
+            actions.push(StepAction::SelectTrack(index));
+        }
+        let p = ui.painter();
+        if selected {
+            p.rect_filled(name_rect, theme::R_CHIP as f32, theme::WELL_HOVER);
+        } else if name.hovered() {
+            p.rect_filled(name_rect, theme::R_CHIP as f32, theme::WELL);
+        }
+        // The colour bar is the row's identity; the disc beside it flashes
+        // when the track fires, which is how an operator finds the limb a
+        // sound belongs to without reading anything.
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(name_rect.min.x + theme::S_2XS, name_rect.min.y),
+            egui::vec2(3.0, 26.0),
+        );
+        p.rect_filled(bar, 1.5, if audible { ink } else { theme::GHOST });
+        p.circle_filled(
+            egui::pos2(bar.max.x + theme::S_SM + 4.5, name_rect.center().y),
+            4.5,
+            ink.gamma_multiply(0.25 + 0.75 * fired),
+        );
+
+        let text_x = bar.max.x + theme::S_SM + 14.0;
+        let title_ink = if audible { theme::INK } else { theme::FAINT };
+        let title = p.layout_no_wrap(
+            track.name.clone(),
+            egui::FontId::proportional(theme::FS_CONTROL),
+            title_ink,
+        );
+        p.galley(
+            egui::pos2(text_x, name_rect.center().y - title.size().y - 1.0),
+            title,
+            title_ink,
+        );
+        let meta = p.layout_no_wrap(
+            format!("{} hits", track.hits(seq.len)),
+            egui::FontId::monospace(theme::FS_MICRO),
+            theme::HINT,
+        );
+        p.galley(
+            egui::pos2(text_x, name_rect.center().y + 1.0),
+            meta,
+            theme::HINT,
+        );
+        name.context_menu(|ui| {
+            if ui.button("Clear this track").clicked() {
+                actions.push(StepAction::ClearTrack(index));
+                ui.close();
+            }
+            ui.separator();
+            if ui
+                .button(egui::RichText::new("Remove track").color(theme::LIVE_CORAL))
+                .clicked()
+            {
+                actions.push(StepAction::RemoveTrack(index));
+                ui.close();
+            }
+        });
+
+        // ── the cells ──
+        for i in 0..seq.len {
+            let velocity = track.steps.get(i).copied().unwrap_or(0.0);
+            let cell = crate::widgets::step_cell(
+                ui,
+                each,
+                velocity,
+                ink,
+                audible,
+                seq.running && i == seq.current(),
+                i % 4 == 0,
+            );
+            if cell.clicked() {
+                actions.push(StepAction::Cycle(index, i));
+            }
+            if cell.secondary_clicked() {
+                actions.push(StepAction::ClearCell(index, i));
+            }
+            cell.on_hover_text(if velocity >= animus_runtime::FULL {
+                format!("Full hit · step {}", i + 1)
+            } else if velocity > 0.0 {
+                format!("Ghost hit · step {}", i + 1)
+            } else {
+                format!("Empty · step {}", i + 1)
+            });
+        }
+
+        // ── mute and solo ──
+        for (label, on, mark, action) in [
+            (
+                "M",
+                track.mute,
+                theme::LIVE_CORAL,
+                StepAction::ToggleMute(index),
+            ),
+            (
+                "S",
+                track.solo,
+                theme::CAUTION_AMBER,
+                StepAction::ToggleSolo(index),
+            ),
+        ] {
+            let (rect, response) =
+                ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+            if response.clicked() {
+                actions.push(action);
+            }
+            let p = ui.painter();
+            p.rect_filled(
+                rect,
+                theme::R_BADGE as f32,
+                if on { theme::WELL_HOVER } else { theme::WELL },
+            );
+            let ink = if on { mark } else { theme::FAINT };
+            let galley = p.layout_no_wrap(
+                label.to_string(),
+                egui::FontId::monospace(theme::FS_TINY),
+                ink,
+            );
+            p.galley(rect.center() - galley.size() * 0.5, galley, ink);
+            response.on_hover_text(if label == "M" {
+                "Mute this track"
+            } else {
+                "Solo this track — every other row goes quiet"
+            });
+        }
+    });
+    ui.add_space(2.0);
+}
+
+/// Transport, record, tempo and grid, in one row.
 fn transport_row(
     ui: &mut egui::Ui,
     seq: &animus_runtime::Sequencer,
     mode: EditMode,
-    puppet: &str,
+    puppet_name: &str,
+    collapsed: bool,
     actions: &mut Vec<StepAction>,
 ) {
     ui.horizontal(|ui| {
-        label(ui, "steps");
+        ui.spacing_mut().item_spacing.x = theme::S_XS;
+
         ui.label(
-            egui::RichText::new(puppet)
+            egui::RichText::new("SEQUENCER")
+                .size(theme::FS_LABEL)
+                .color(theme::FAINT)
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new(puppet_name)
                 .monospace()
                 .size(theme::FS_TINY)
-                .color(theme::FAINT),
+                .color(theme::DIM),
         );
         ui.add_space(theme::S_SM);
 
-        if icons::button(ui, icons::Icon::Stop, false, Some(theme::MID))
-            .on_hover_text("Stop the transport and park the playhead at step 1.")
+        if icons::button(ui, icons::Icon::Stop, false, Some(theme::SUB))
+            .on_hover_text("Stop and return to step 1")
             .clicked()
         {
-            actions.push(StepAction::SetRunning(false));
+            actions.push(StepAction::Stop);
         }
+        let running = seq.running;
         if icons::button(
             ui,
-            if seq.running {
+            if running {
                 icons::Icon::Stop
             } else {
                 icons::Icon::Play
             },
-            false,
-            Some(theme::GO_GREEN),
+            running,
+            Some(if running { theme::GO_GREEN } else { theme::SUB }),
         )
-        .on_hover_text("Run the pattern. Each step fires as the playhead enters it.")
+        .on_hover_text("Run or pause the pattern")
         .clicked()
         {
-            actions.push(StepAction::SetRunning(!seq.running));
+            actions.push(StepAction::SetRunning(!running));
         }
 
         record_button(ui, seq, mode, actions);
 
-        ui.add_space(theme::S_MD);
+        // **TAP plays whether or not it records.** Finding the sound comes
+        // before committing it, so the button is useful with record off and
+        // writes under the playhead when it is on.
+        let empty = seq.tracks.is_empty();
+        let tap = ui.add(
+            egui::Button::new(
+                egui::RichText::new("TAP")
+                    .monospace()
+                    .size(theme::FS_TINY)
+                    .color(if empty { theme::DISABLED } else { theme::INK }),
+            )
+            .fill(theme::WELL)
+            .corner_radius(theme::R_BADGE),
+        );
+        if tap.is_pointer_button_down_on() && !empty {
+            actions.push(StepAction::Tap);
+        }
+        tap.on_hover_text("Hold to hit the selected track. With record armed it writes the step.");
+
+        ui.add_space(theme::S_SM);
         separator(ui);
-        ui.add_space(theme::S_MD);
+        ui.add_space(theme::S_SM);
 
         ui.label(
-            egui::RichText::new("Steps")
-                .size(theme::FS_SM)
-                .color(theme::SUB),
+            egui::RichText::new("GRID")
+                .size(theme::FS_MICRO)
+                .color(theme::FAINT),
+        );
+        for q in animus_runtime::Quantize::ALL {
+            let on = q == seq.quantize;
+            if crate::widgets::chip(
+                ui,
+                q.label(),
+                on,
+                if on { theme::BRIGHT } else { theme::DIM },
+            )
+            .clicked()
+            {
+                actions.push(StepAction::SetQuantize(q));
+            }
+        }
+
+        ui.add_space(theme::S_SM);
+        ui.label(
+            egui::RichText::new("STEPS")
+                .size(theme::FS_MICRO)
+                .color(theme::FAINT),
         );
         for n in animus_runtime::STEP_COUNTS {
-            let selected = seq.len() == n;
-            let blocked = seq.len_blocked_by(n);
-            let response = ui.add_enabled(
-                blocked.is_none(),
-                egui::Button::new(
-                    egui::RichText::new(n.to_string())
-                        .monospace()
-                        .size(theme::FS_LABEL)
-                        .color(if selected { theme::BRIGHT } else { theme::DIM }),
-                )
-                .fill(if selected {
-                    theme::WELL_HOVER
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
-                .corner_radius(theme::R_BADGE),
-            );
-            let response = match blocked {
-                Some(floor) => response.on_disabled_hover_text(format!(
-                    "Step {floor} holds a pose. Clear it and this length opens up."
-                )),
-                None => response,
-            };
-            if response.clicked() {
+            let on = n == seq.len;
+            if crate::widgets::chip(
+                ui,
+                &n.to_string(),
+                on,
+                if on { theme::BRIGHT } else { theme::DIM },
+            )
+            .on_hover_text("Steps beyond this length are kept and come back when it grows.")
+            .clicked()
+            {
                 actions.push(StepAction::SetLength(n));
             }
         }
 
-        ui.add_space(theme::S_MD);
+        ui.add_space(theme::S_SM);
         let mut bpm = seq.bpm;
         if ui
             .add(
                 egui::DragValue::new(&mut bpm)
                     .speed(0.5)
-                    .range(20.0..=300.0)
+                    .range(40.0..=200.0)
                     .suffix(" BPM"),
             )
-            .on_hover_text("One step is one beat.")
             .changed()
         {
             actions.push(StepAction::SetBpm(bpm));
@@ -1453,259 +1729,104 @@ fn transport_row(
         beat_dots(ui, seq);
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(theme::S_SM);
             if ui
-                .button(egui::RichText::new("Collapse").size(theme::FS_SM))
-                .on_hover_text("Fold the grid away and give the height back to the stage.")
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(if collapsed { "Expand" } else { "Collapse" })
+                            .size(theme::FS_SM)
+                            .color(theme::SUB),
+                    )
+                    .fill(theme::WELL)
+                    .corner_radius(theme::R_BADGE),
+                )
+                .on_hover_text("Fold the grid away for more rigging room")
                 .clicked()
             {
                 actions.push(StepAction::ToggleCollapsed);
             }
-            if seq.filled() > 0
-                && ui
-                    .button(egui::RichText::new("Clear all").size(theme::FS_SM))
-                    .on_hover_text("Empty every step.")
+            if !collapsed {
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Clear pattern")
+                                .size(theme::FS_SM)
+                                .color(theme::SUB),
+                        )
+                        .fill(theme::WELL)
+                        .corner_radius(theme::R_BADGE),
+                    )
                     .clicked()
-            {
-                actions.push(StepAction::ClearAll);
+                {
+                    actions.push(StepAction::ClearAll);
+                }
+                if icons::button(ui, icons::Icon::Plus, false, Some(theme::SUB))
+                    .on_hover_text("Give the selected joint a track of its own")
+                    .clicked()
+                {
+                    actions.push(StepAction::AddTrack);
+                }
             }
         });
     });
 }
 
-/// Arm record, and the reason it is refused when it is.
-///
-/// Armed by hand, always. Entering PERFORM never arms it — an editor that
-/// starts recording because you changed screens is an editor you cannot trust
-/// with a show.
+/// Arm live recording. Coral, because armed is a state the audience can end
+/// up in the middle of.
 fn record_button(
     ui: &mut egui::Ui,
     seq: &animus_runtime::Sequencer,
     mode: EditMode,
     actions: &mut Vec<StepAction>,
 ) {
-    // Live recording writes the pose the operator is *holding* as the
-    // playhead crosses each step, so it needs the transport and a hand — both
-    // of which live in PERFORM. In EDIT you author steps one at a time by
-    // posing them, which needs no arming.
-    let blocked = match mode {
-        EditMode::Rig => Some("Recording captures live pulls. Switch to PERFORM first."),
-        EditMode::Edit => {
-            Some("In EDIT a step is posed directly. Arm record in PERFORM to play it in.")
-        }
-        EditMode::Live => None,
-    };
-
-    if seq.armed {
-        ui.add_enabled(
-            false,
-            egui::Button::new(
-                egui::RichText::new("\u{23FA} Armed")
-                    .size(theme::FS_SM)
-                    .color(theme::LIVE_CORAL),
-            )
-            .fill(egui::Color32::from_rgba_unmultiplied(242, 96, 106, 26))
-            .corner_radius(theme::R_CONTROL),
-        );
-        if ui
-            .button(egui::RichText::new("Disarm").size(theme::FS_SM))
-            .on_hover_text("Stop writing poses into the grid.")
-            .clicked()
-        {
-            actions.push(StepAction::SetArmed(false));
-        }
-        return;
-    }
-
+    let armed = seq.armed;
+    let allowed = mode != EditMode::Rig;
     let response = ui.add_enabled(
-        blocked.is_none(),
+        allowed,
         egui::Button::new(
-            egui::RichText::new("\u{23FA} Arm record")
+            egui::RichText::new(if armed { "REC" } else { "Arm record" })
                 .size(theme::FS_SM)
-                .color(theme::LIVE_CORAL),
+                .color(if armed { theme::BRIGHT } else { theme::SUB }),
         )
-        .corner_radius(theme::R_CONTROL),
+        .fill(if armed {
+            theme::STOP_SURFACE
+        } else {
+            theme::WELL
+        })
+        .stroke(if armed {
+            egui::Stroke::new(1.0_f32, theme::STOP_BORDER)
+        } else {
+            egui::Stroke::NONE
+        })
+        .corner_radius(theme::R_BADGE),
     );
-    let response = match blocked {
-        Some(why) => response.on_disabled_hover_text(why),
-        None => response.on_hover_text(
-            "Write the pose you are holding into each step as the playhead crosses it.",
-        ),
+    let response = if allowed {
+        response.on_hover_text(
+            "Arm live input. Hold TAP to write hits into the selected track under the playhead.",
+        )
+    } else {
+        response.on_disabled_hover_text("Recording belongs to EDIT and PERFORM, not to RIG.")
     };
     if response.clicked() {
-        actions.push(StepAction::SetArmed(true));
+        actions.push(StepAction::SetArmed(!armed));
     }
 }
 
-/// Four dots: where the grid is in the bar.
+/// Four dots that count the bar, so the tempo is visible without a number.
 fn beat_dots(ui: &mut egui::Ui, seq: &animus_runtime::Sequencer) {
-    const N: usize = 4;
-    let here = seq.current() % N;
-    ui.add_space(theme::S_SM);
-    for i in 0..N {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
-        let lit = seq.running && i == here;
-        ui.painter().circle_filled(
-            rect.center(),
-            3.0,
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(44.0, 10.0), egui::Sense::hover());
+    let p = ui.painter();
+    let per_beat = seq.quantize.division().max(1.0) as usize;
+    let beat = (seq.current() / per_beat) % 4;
+    for i in 0..4 {
+        let at = egui::pos2(rect.min.x + 5.0 + i as f32 * 11.0, rect.center().y);
+        let lit = seq.running && i == beat;
+        p.circle_filled(
+            at,
+            if lit { 3.5 } else { 2.5 },
             if lit { theme::GO_GREEN } else { theme::GHOST },
         );
     }
-}
-
-/// Tall enough for a number, a state and a readout.
-const PAD_HEIGHT: f32 = 56.0;
-
-/// The grid. Four to a row whatever the length, so a bar reads as a bar and
-/// 16 reads as four of them.
-fn step_grid(
-    ui: &mut egui::Ui,
-    seq: &animus_runtime::Sequencer,
-    mode: EditMode,
-    actions: &mut Vec<StepAction>,
-) {
-    // Eight across: a bar of eight is the shape an operator reads at a
-    // glance, and wrapping it into two rows of four turns one bar into what
-    // looks like two.
-    const PER_ROW: usize = 8;
-    const PAD_CHROME: f32 = theme::S_SM * 2.0 + 2.0;
-
-    let playhead = seq.running.then(|| seq.current());
-    let spacing = ui.spacing().item_spacing.x;
-    let budget =
-        ui.available_width() - spacing * (PER_ROW as f32 - 1.0) - PAD_CHROME * PER_ROW as f32;
-    let width = (budget / PER_ROW as f32).max(70.0);
-
-    let count = seq.len();
-    for row in 0..count.div_ceil(PER_ROW) {
-        // `horizontal_top`: `horizontal` centres items of unequal height
-        // against each other, which stepped each pad down the row.
-        ui.horizontal_top(|ui| {
-            for col in 0..PER_ROW {
-                let i = row * PER_ROW + col;
-                if i < count {
-                    step_pad(ui, seq, mode, i, playhead == Some(i), width, actions);
-                }
-            }
-        });
-    }
-}
-
-/// One step: a pose, or the room for one.
-#[allow(clippy::too_many_arguments)]
-fn step_pad(
-    ui: &mut egui::Ui,
-    seq: &animus_runtime::Sequencer,
-    mode: EditMode,
-    index: usize,
-    under_playhead: bool,
-    width: f32,
-    actions: &mut Vec<StepAction>,
-) {
-    let posed = seq.pose(index);
-    let selected = seq.selected == index;
-    let editing = mode == EditMode::Edit;
-
-    let accent = if under_playhead {
-        theme::GO_GREEN
-    } else if selected && editing {
-        theme::BRIGHT
-    } else if posed.is_some() {
-        theme::SOFT
-    } else {
-        theme::GHOST
-    };
-
-    let fill = if under_playhead {
-        theme::PLAYING_CARD
-    } else if posed.is_some() {
-        theme::WELL
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    let edge = if under_playhead || selected {
-        accent
-    } else {
-        theme::SEAM
-    };
-
-    let actions_before = actions.len();
-    let response = egui::Frame::NONE
-        .fill(fill)
-        .stroke(egui::Stroke::new(1.0_f32, edge))
-        .corner_radius(theme::R_CARD)
-        .inner_margin(egui::Margin::symmetric(
-            theme::S_SM as i8,
-            theme::S_XS as i8,
-        ))
-        .show(ui, |ui| {
-            ui.set_width(width);
-            ui.set_height(PAD_HEIGHT);
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{}", index + 1))
-                            .monospace()
-                            .size(theme::FS_LABEL)
-                            .color(accent),
-                    );
-                    if selected && editing {
-                        ui.label(
-                            egui::RichText::new("EDITING")
-                                .monospace()
-                                .size(theme::FS_MICRO)
-                                .color(theme::BRIGHT),
-                        );
-                    }
-                    if posed.is_some() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .small_button("\u{00D7}")
-                                .on_hover_text("Clear this step. It becomes a rest.")
-                                .clicked()
-                            {
-                                actions.push(StepAction::Clear(index));
-                            }
-                        });
-                    }
-                });
-
-                match posed {
-                    Some(pose) => {
-                        ui.label(
-                            egui::RichText::new("posed")
-                                .size(theme::FS_SM)
-                                .color(theme::SOFT),
-                        );
-                        ui.label(data(format!("{} joints", pose.len())));
-                    }
-                    None => {
-                        // A rest is a choice, so it says so rather than
-                        // looking like a step that failed to load.
-                        ui.label(
-                            egui::RichText::new("rest")
-                                .size(theme::FS_SM)
-                                .color(theme::GHOST),
-                        );
-                    }
-                }
-            });
-        })
-        .response;
-
-    let child_took_it = actions.len() > actions_before;
-    let hit = ui.interact(
-        response.rect,
-        ui.id().with(("step", index)),
-        egui::Sense::click(),
-    );
-    if hit.clicked() && !child_took_it {
-        actions.push(StepAction::Select(index));
-    }
-    hit.on_hover_text(match (posed.is_some(), editing) {
-        (_, true) => "Click to edit this step. The puppet jumps to its pose.",
-        (true, false) => "Holds a pose. Switch to EDIT to change it.",
-        (false, false) => "A rest: nothing is written, so the springs carry on.",
-    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1751,7 +1872,7 @@ pub fn draw(
                 state,
                 &doc.0,
                 output.as_ref(),
-                seq.filled(),
+                seq.tracks.iter().filter(|t| t.hits(seq.len) > 0).count(),
                 seq.armed,
                 file_status,
                 &mut out.file_request,

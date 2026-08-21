@@ -106,7 +106,7 @@ pub fn hold_rest_in_rig(
 pub fn settle_on_mode_change(
     state: Res<EditorState>,
     mut seq: ResMut<Sequencer>,
-    mut last: Local<Option<(EditMode, usize)>>,
+    mut last: Local<Option<EditMode>>,
     mut targets: ResMut<JointTargets>,
     mut held: ResMut<HeldJoint>,
     mut drag: ResMut<ActiveDrag>,
@@ -116,7 +116,7 @@ pub fn settle_on_mode_change(
         &mut animus_runtime::PuppetSolver,
     )>,
 ) {
-    let now = (state.mode, seq.selected);
+    let now = state.mode;
     let previous = last.replace(now);
     // First frame: record and do nothing. Settling on startup would stop a
     // pattern a saved session had every right to still be running.
@@ -124,6 +124,7 @@ pub fn settle_on_mode_change(
     if previous == now {
         return;
     }
+    let _ = previous;
 
     // **The dial belongs to the pose, not to the session.** Crossing into a
     // different step means a different pose is on screen, and a rotation
@@ -147,29 +148,13 @@ pub fn settle_on_mode_change(
                 solver.0.reset_to_rest(&rig.0);
             }
         }
-        EditMode::Edit => {
-            // Show the step being edited. Without this, selecting step 4
-            // leaves the puppet in step 3's pose and the operator edits one
-            // step while looking at another.
-            seq.armed = false;
-            let selected = seq.selected;
-            if let Some(pose) = seq.pose(selected).cloned() {
-                targets.clear();
-                for (puppet, joint, at) in pose {
-                    targets.set(puppet, joint, at);
-                }
-            } else if previous.0 != EditMode::Edit {
-                // An empty step has no pose to show, so entering Edit on one
-                // starts from rest rather than from whatever the last mode
-                // left behind.
-                targets.clear();
-                for (rig, mut solver) in &mut solvers {
-                    solver.0.reset_to_rest(&rig.0);
-                }
-            }
-        }
+        // **EDIT and PERFORM both leave the puppet alone.** EDIT builds
+        // the pattern and PERFORM runs it; neither has a saved pose to put
+        // on screen, because a pattern is made of hits rather than of
+        // positions. Settling either would interrupt a puppet that is
+        // already moving for no gain.
         // Going to the stage should not disturb the rig or the pattern.
-        EditMode::Live => {}
+        EditMode::Edit | EditMode::Live => {}
     }
 }
 
@@ -242,28 +227,40 @@ mod tests {
         assert!(!app.world().resource::<JointTargets>().0.is_empty());
     }
 
-    /// **The step being edited has to be the step on screen.**
+    /// **Crossing into EDIT must not interrupt a puppet that is moving.**
     ///
-    /// Selecting a different step in EDIT without showing it means the
-    /// operator poses step 4 while looking at step 3 — and every pose they
-    /// author is wrong by exactly one step.
+    /// A pattern is made of hits, not of positions, so there is no saved
+    /// pose for EDIT to put on screen — and settling anyway would stop a
+    /// limb mid-swing every time the operator changed screens.
     #[test]
-    fn selecting_a_step_in_edit_shows_that_step() {
+    fn entering_edit_leaves_the_puppet_where_it_is() {
         let mut app = app();
-        {
-            let mut seq = app.world_mut().resource_mut::<Sequencer>();
-            seq.set_pose(2, vec![(P, J, glam::Vec2::new(9.0, 9.0))]);
-        }
+        set_mode(&mut app, EditMode::Live);
+        dirty(&mut app);
         set_mode(&mut app, EditMode::Edit);
+        assert!(
+            !app.world().resource::<JointTargets>().0.is_empty(),
+            "entering EDIT cleared a puppet it had no reason to touch"
+        );
+    }
 
-        app.world_mut().resource_mut::<Sequencer>().select(2);
-        app.update();
+    /// The dial is part of the pose, not of the session: crossing a mode
+    /// boundary leaves it at zero rather than stamping the old angle onto
+    /// whatever the operator does next.
+    #[test]
+    fn changing_mode_puts_the_rotation_dial_back_to_zero() {
+        let mut app = app();
+        set_mode(&mut app, EditMode::Live);
+        app.world_mut()
+            .resource_mut::<crate::rotate::LiveRotations>()
+            .set(P, J, 0.9);
 
-        let targets = app.world().resource::<JointTargets>();
+        set_mode(&mut app, EditMode::Edit);
         assert_eq!(
-            targets.0.get(&(P, J)).copied(),
-            Some(glam::Vec2::new(9.0, 9.0)),
-            "the puppet must be showing the step that is being edited"
+            app.world()
+                .resource::<crate::rotate::LiveRotations>()
+                .get(P, J),
+            0.0
         );
     }
 }

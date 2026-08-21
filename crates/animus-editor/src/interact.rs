@@ -204,7 +204,6 @@ pub fn apply_interactions(
     mut targets: ResMut<JointTargets>,
     mut pending: ResMut<PendingChangesRes>,
     mut pending_bone: ResMut<PendingBone>,
-    mut seq: ResMut<animus_runtime::Sequencer>,
     scale: Res<RenderScale>,
     cameras: Query<(&Camera, &GlobalTransform), With<ViewportCamera>>,
     target: Option<Res<ViewportTarget>>,
@@ -436,6 +435,22 @@ pub fn apply_interactions(
                     );
                 }
             }
+
+            // **Idle means nothing is held.** `HeldJoint` is the flag every
+            // mover steps around — the sequencer skips it, a rotation skips
+            // it, a binding will skip it — so a stale one is a joint that
+            // silently stops animating for the rest of the session while
+            // every other joint on the same puppet carries on.
+            //
+            // Two paths used to leave it set: a lost Release, and EDIT's
+            // release, which deliberately keeps the *target* (the pose is
+            // the standing instruction) and had no reason to keep the hand.
+            // Stating the invariant once here is better than remembering it
+            // in each arm of the state machine, because the cost of
+            // forgetting is invisible until a show is running.
+            if matches!(drag.0, DragState::Idle) && held.0.is_some() {
+                held.0 = None;
+            }
         }
 
         // Creating is an Edit-mode act, always. Live mode is the show: a
@@ -502,23 +517,6 @@ pub fn apply_interactions(
         Tool::Vertex | Tool::Joint | Tool::Bone => {}
     }
 
-    // ── EDIT writes the pose into the step being edited ──
-    //
-    // Continuously while dragging, not on release: the operator chose "the
-    // step updates as you move it", and a pose that only lands on mouse-up
-    // means the grid disagrees with the screen for the whole gesture.
-    if state.mode == crate::state::EditMode::Edit && input.dragging_left {
-        let pose = animus_runtime::capture_from(
-            solvers
-                .iter()
-                .map(|(root, rig, solver)| (root.0, rig, solver)),
-        );
-        if !pose.is_empty() {
-            let step = seq.selected;
-            seq.set_pose(step, pose);
-        }
-    }
-
     let _ = target;
 }
 
@@ -582,9 +580,31 @@ pub fn apply_dock_output(
 
     for action in out.step_actions {
         match action {
-            StepAction::Select(i) => seq.select(i),
-            StepAction::Clear(i) => seq.clear_step(i),
+            StepAction::SelectTrack(i) => seq.select(i),
+            StepAction::Cycle(t, i) => seq.cycle(t, i),
+            StepAction::ClearCell(t, i) => seq.clear_cell(t, i),
+            StepAction::ClearTrack(t) => seq.clear_track(t),
             StepAction::ClearAll => seq.clear_all(),
+            StepAction::RemoveTrack(t) => seq.remove_track(t),
+            StepAction::ToggleMute(t) => {
+                if let Some(track) = seq.tracks.get_mut(t) {
+                    track.mute = !track.mute;
+                }
+            }
+            StepAction::ToggleSolo(t) => {
+                if let Some(track) = seq.tracks.get_mut(t) {
+                    track.solo = !track.solo;
+                }
+            }
+            // Consumed by `run_sequencer` this frame and cleared there, so a
+            // held button reads as a held button rather than as one hit.
+            StepAction::Tap => seq.tapping = true,
+            StepAction::AddTrack => add_track_for_selection(&mut seq, &doc, state.selection),
+            StepAction::Stop => {
+                seq.running = false;
+                seq.position = 0.0;
+                seq.armed = false;
+            }
             StepAction::SetRunning(on) => {
                 seq.running = on;
                 if !on {
@@ -597,7 +617,8 @@ pub fn apply_dock_output(
             }
             StepAction::SetArmed(on) => seq.armed = on,
             StepAction::SetLength(n) => seq.set_len(n),
-            StepAction::SetBpm(v) => seq.bpm = v.clamp(20.0, 300.0),
+            StepAction::SetQuantize(q) => seq.quantize = q,
+            StepAction::SetBpm(v) => seq.bpm = v.clamp(40.0, 200.0),
             StepAction::ToggleCollapsed => {
                 state.clips_collapsed = !state.clips_collapsed;
             }
@@ -912,11 +933,11 @@ pub fn keyboard_shortcuts(
     // stop reaching for.
     let del = keys.just_pressed(KeyCode::Delete) || keys.just_pressed(KeyCode::Backspace);
 
-    // In EDIT the grid is the work, so Delete empties the step being posed
+    // In EDIT the grid is the work, so Delete empties the selected track
     // rather than reaching into the rig underneath it.
     if del && state.mode == crate::state::EditMode::Edit {
-        let step = seq.selected;
-        seq.clear_step(step);
+        let track = seq.selected;
+        seq.clear_track(track);
     }
     // A layer is a whole image and everything rigged onto it, so deleting one
     // goes through the same command the panel's trash icon uses — one act,
@@ -968,4 +989,42 @@ pub fn keyboard_shortcuts(
             }
         }
     }
+}
+
+/// Give the selected joint a row of its own.
+///
+/// **The default direction is across the limb, not along it.** A shove along
+/// a bone stretches it and the springs answer by snapping straight back —
+/// visually almost nothing. A shove across it swings the limb, which is what
+/// a hit on a drum machine is supposed to look like. The operator can point
+/// it anywhere afterwards; this is only where it starts.
+fn add_track_for_selection(
+    seq: &mut animus_runtime::Sequencer,
+    doc: &DocumentRes,
+    selection: Selection,
+) {
+    let Selection::Joint(puppet, joint) = selection else {
+        warn!("select a joint first: a track is a limb, and a limb needs a joint");
+        return;
+    };
+    let Some(PuppetKind::Mesh(mesh)) = doc.0.puppets.get(&puppet).map(|p| &p.kind) else {
+        return;
+    };
+    let Some(j) = mesh.skeleton.joints.get(&joint) else {
+        return;
+    };
+
+    let tree = animus_core::skeleton::rig_tree(&mesh.skeleton);
+    let along = tree
+        .parent(joint)
+        .and_then(|p| mesh.skeleton.joints.get(&p))
+        .map(|p| j.rest - p.rest)
+        .filter(|v| v.length_squared() > 1e-6)
+        .map(|v| v.normalize())
+        .unwrap_or(Vec2::Y);
+    // Perpendicular, at a size that reads on a 2000px drawing without
+    // throwing the limb off the stage.
+    let dir = Vec2::new(-along.y, along.x) * 24.0;
+
+    seq.add_track(j.name.clone(), puppet, joint, dir);
 }

@@ -175,9 +175,17 @@ pub fn step(
         // A grab while dragging, or a move/release while idle: input noise.
         // Losing a Release (alt-tab mid-drag) lands here as a later Grab
         // while Dragging — reset so the machine cannot wedge.
-        (DragState::Dragging { .. }, DragEvent::Grab(_)) => {
+        //
+        // **And let go of what it was holding.** Resetting the state alone
+        // left `HeldJoint` pointing at the joint from the lost gesture, and
+        // a held joint is one every mover steps around: the sequencer skips
+        // it, a rotation skips it, a binding will skip it. The symptom is
+        // exact and baffling — one joint, usually the one still selected,
+        // that never animates again for the rest of the session, while
+        // every other joint on the same puppet does.
+        (DragState::Dragging { puppet, joint, .. }, DragEvent::Grab(_)) => {
             *state = DragState::Idle;
-            vec![DragEffect::None]
+            vec![DragEffect::ClearTarget { puppet, joint }]
         }
         (DragState::Idle, _) => vec![DragEffect::None],
     }
@@ -440,6 +448,20 @@ mod tests {
             TEST_GRAB_RADIUS,
         );
         assert_eq!(state, DragState::Idle, "the machine resets");
-        assert_eq!(effects, vec![DragEffect::None]);
+        // **And lets go of what it was holding.** Resetting the state alone
+        // left `HeldJoint` pointing at the joint from the lost gesture, and
+        // a held joint is one every mover steps around: the sequencer skips
+        // it, a rotation skips it, a binding will skip it. The symptom is
+        // exact and baffling — one joint, usually the one still selected,
+        // that never animates again for the rest of the session while every
+        // other joint on the same puppet does.
+        assert_eq!(
+            effects,
+            vec![DragEffect::ClearTarget {
+                puppet: PUPPET,
+                joint: J
+            }],
+            "the recovery must release the joint, not only forget the drag"
+        );
     }
 }

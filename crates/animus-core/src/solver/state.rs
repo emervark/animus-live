@@ -83,6 +83,23 @@ impl SolverState {
         self.prev[i] += d;
     }
 
+    /// Give joint `i` a shove: velocity, not a new position.
+    ///
+    /// **The opposite of [`displace`](Self::displace), and the difference is
+    /// the whole point.** `displace` moves `pos` and `prev` together, so the
+    /// joint arrives with no momentum — a teleport. A kick moves `pos` and
+    /// leaves `prev` where it was, and in Verlet integration `pos - prev`
+    /// *is* the velocity, so the joint arrives already travelling.
+    ///
+    /// That is what a sequencer step is: a hit, not a destination. It also
+    /// means the decay is free and correct — the bones and `rest_pull` take
+    /// the energy back out at whatever rate the puppet is tuned for, rather
+    /// than at some constant chosen in the sequencer and reapplied every
+    /// frame.
+    pub fn kick(&mut self, i: u32, d: Vec2) {
+        self.pos[i as usize] += d;
+    }
+
     /// Force a specific, possibly non-finite, position into joint `i`
     /// without touching `prev` — used only to exercise the NaN guard.
     #[cfg(test)]
