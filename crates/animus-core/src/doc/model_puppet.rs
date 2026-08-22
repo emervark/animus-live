@@ -59,6 +59,29 @@ impl ModelPuppet {
     pub fn node_named(&self, name: &str) -> Option<&ModelNode> {
         self.nodes.iter().find(|n| n.name == name)
     }
+
+    /// Every node hanging below `id`, in breadth-first order.
+    ///
+    /// The model's counterpart to [`crate::skeleton::rig_tree`]'s
+    /// `descendants`, and it lives here for the same reason that one lives in
+    /// `skeleton`: **a rotation carries everything below it**, and the panel
+    /// that says so, the gizmo that draws it and the projection that applies
+    /// it must all be asking the same question of the same data. A node whose
+    /// `parent` points back into its own chain — which a hand-edited file can
+    /// express — stops the walk rather than looping forever.
+    pub fn descendants(&self, id: JointId) -> Vec<JointId> {
+        let mut out = Vec::new();
+        let mut frontier = vec![id];
+        while let Some(at) = frontier.pop() {
+            for node in &self.nodes {
+                if node.parent == Some(at) && node.id != id && !out.contains(&node.id) {
+                    out.push(node.id);
+                    frontier.push(node.id);
+                }
+            }
+        }
+        out
+    }
 }
 
 /// One node of the model's skeleton, and the id this document knows it by.

@@ -41,7 +41,29 @@ impl Plugin for RuntimePlugin {
             .init_resource::<EntityIndex>()
             .init_resource::<crate::project::PuppetTextures>()
             .init_resource::<BuildWarnings>()
-            .add_systems(Update, sync_document.in_set(SyncSet::Apply));
+            // The shared bus. `SolverPlugin` also owns these, and it usually
+            // gets there first — but `drive_model_nodes` below reads all
+            // three, and a projection that only wanted to spawn a model
+            // should not have to bring the physics with it to avoid a
+            // missing-resource panic. `init_resource` is idempotent, so
+            // whichever plugin runs first wins and the other is a no-op.
+            .init_resource::<crate::solve::JointTargets>()
+            .init_resource::<crate::solve::HeldJoint>()
+            .init_resource::<crate::solve::LiveRotations>()
+            .add_systems(Startup, crate::stage_light::spawn_stage_lights)
+            .add_systems(Update, sync_document.in_set(SyncSet::Apply))
+            // Discovery first, driving second, and both after the sync that
+            // spawns the scene they work on. A model's nodes arrive
+            // asynchronously, so discovery keeps trying until it finds them.
+            .add_systems(
+                Update,
+                (
+                    crate::model::discover_model_nodes,
+                    crate::model::drive_model_nodes,
+                )
+                    .chain()
+                    .after(SyncSet::Apply),
+            );
     }
 }
 

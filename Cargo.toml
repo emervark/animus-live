@@ -37,7 +37,12 @@ image       = { version = "0.25", default-features = false, features = ["png", "
 # the wgpu-hal/egui set. Default features for now -- the application needs
 # most of them anyway, and guessing at a trimmed feature list is a worse
 # first move than measuring later.
-bevy        = "=0.19.1"
+#
+# `jpeg` is not a Bevy default and glTF models depend on it constantly:
+# almost every downloaded model ships JPEG colour maps, and without the
+# feature the texture fails to decode, the material never completes, and the
+# whole model renders as nothing at all — with one line in the log to say so.
+bevy        = { version = "=0.19.1", features = ["jpeg"] }
 # Exactly one `egui` may exist in the graph (spec §2.1). These three versions
 # are a set: bumping any one of them requires re-checking the others.
 #

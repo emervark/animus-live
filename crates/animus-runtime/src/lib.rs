@@ -8,6 +8,7 @@
 pub mod components;
 pub mod coords;
 pub mod index;
+mod model;
 pub mod plugin;
 pub mod project;
 mod project_source;
@@ -15,6 +16,7 @@ pub mod sequencer;
 mod signal;
 pub mod skinning;
 pub mod solve;
+pub mod stage_light;
 
 pub use components::{
     BoneOf, CompiledRigRef, EditorOnly, LayerOf, MeshInfluences, PuppetMesh, PuppetRoot,
@@ -22,10 +24,11 @@ pub use components::{
 };
 pub use coords::{img_to_world, img_to_world_angle, world_to_img};
 pub use index::{EntityIndex, PuppetEntities};
+pub use model::{ModelNodes, discover_model_nodes, drive_model_nodes, is_model, model_descendants};
 pub use plugin::{RuntimePlugin, SyncSet};
 pub use project::{
-    BuildWarnings, DocRevision, DocumentRes, PendingChangesRes, PuppetTextures, RenderScale,
-    puppet_pivot, sync_document,
+    BuildWarnings, DocRevision, DocumentRes, ModelRoot, PendingChangesRes, PuppetTextures,
+    RenderScale, puppet_pivot, sync_document,
 };
 pub use project_source::{ProjectAssetRoot, asset_uri, register as register_asset_source};
 pub use sequencer::{
@@ -39,3 +42,4 @@ pub use skinning::{BuildError, SkinnedMeshBuild, build_inverse_bindposes, build_
 pub use solve::{
     HeldJoint, JointTargets, LiveRotations, SolveSet, SolverPanic, SolverPlugin, WritebackSet,
 };
+pub use stage_light::StageLight;

@@ -210,6 +210,17 @@ pub fn inspector_ui(ui: &mut egui::Ui, doc: &Project, state: &EditorState) -> In
         }
 
         Selection::Joint(pid, jid) => {
+            // A model's node is selected through the same `Selection::Joint`
+            // as a mesh puppet's joint — deliberately, so that one selection,
+            // one gizmo and one binding target serve both. What it *offers*
+            // differs, because a model has no rest position to drag, no mass
+            // and no springs; only the rotation is shared, and that is the
+            // one thing an operator actually reaches for.
+            if let Some(PuppetKind::Model(model)) = doc.puppets.get(&pid).map(|p| &p.kind) {
+                model_node_inspector(ui, &mut out, doc, state, pid, jid, model);
+                out.wants_reset_pose = wants_reset;
+                return out;
+            }
             let Some(joint) = joint_of(doc, pid, jid) else {
                 out.wants_reset_pose = wants_reset;
                 return out;
@@ -470,6 +481,103 @@ fn rotation_section(
             "Poses the limb away from rest, so the drawing bends with it."
         },
     );
+}
+
+/// The inspector for one node of a glTF model's own skeleton.
+///
+/// **Only what a model can honestly offer.** A mesh joint's panel is mostly
+/// about the solver — pin, mass, pull from rest — and none of those words
+/// mean anything to a transform written straight onto a scene. Showing them
+/// greyed out would suggest a 3D rig is a 2D rig missing some features; it
+/// is a different thing, and the panel says which parts carry over.
+fn model_node_inspector(
+    ui: &mut egui::Ui,
+    out: &mut InspectorOut,
+    doc: &Project,
+    state: &EditorState,
+    pid: PuppetId,
+    jid: JointId,
+    model: &animus_core::doc::ModelPuppet,
+) {
+    let Some(node) = model.node(jid) else {
+        crate::widgets::note(ui, "That node is no longer in this model.");
+        return;
+    };
+    let puppet_name = doc
+        .puppets
+        .get(&pid)
+        .map(|p| p.name.as_str())
+        .unwrap_or("Model");
+    crate::widgets::breadcrumb(ui, &[puppet_name, "Model", &node.name]);
+    ui.add_space(theme::S_MD);
+
+    crate::widgets::section_label(ui, "node");
+    ui.add_space(theme::S_SM);
+    crate::widgets::field_row(ui, "Name", &node.name);
+    let parent = node
+        .parent
+        .and_then(|p| model.node(p))
+        .map(|n| n.name.as_str())
+        .unwrap_or("—  (a root of the model)");
+    crate::widgets::field_row(ui, "Hangs from", parent);
+
+    crate::widgets::divider(ui);
+    crate::widgets::section_label(ui, "rotation");
+    ui.add_space(theme::S_SM);
+
+    // Live in every mode, unlike a mesh joint's. A model's rest pose is the
+    // bind pose inside the glTF, which this application does not own and
+    // will not rewrite: turning a bone here is a performance, and RIG has
+    // nothing to save it into.
+    let mut degrees = state.live_rotation.to_degrees();
+    let response = crate::widgets::SliderRow::new("Angle", &mut degrees, -180.0..=180.0)
+        .suffix("°")
+        .decimals(0)
+        .default_value(0.0)
+        .show(ui);
+    if response.changed() {
+        out.set_live_rotation = Some(degrees.to_radians());
+    }
+
+    crate::widgets::note(ui, &model_carries_text(model, jid));
+    crate::widgets::note(
+        ui,
+        "Turned about the axis facing the audience, on top of the pose the model came with.",
+    );
+
+    crate::widgets::divider(ui);
+    crate::widgets::section_label(ui, "live");
+    ui.add_space(theme::S_SM);
+    crate::widgets::note(
+        ui,
+        "Bind this node to a channel in BIND — X, Y and rotation, the same as any joint.",
+    );
+    if state.mode == crate::state::EditMode::Rig {
+        crate::widgets::note(
+            ui,
+            "RIG edits a rest pose, and this model's rest pose lives in its own file.",
+        );
+    }
+}
+
+/// The model's version of [`carries_text`], reading the file's own hierarchy.
+fn model_carries_text(model: &animus_core::doc::ModelPuppet, jid: JointId) -> String {
+    let below = model.descendants(jid);
+    if below.is_empty() {
+        return "Nothing hangs off this node, so rotating it moves nothing.".into();
+    }
+    const SHOWN: usize = 3;
+    let names: Vec<&str> = below
+        .iter()
+        .take(SHOWN)
+        .filter_map(|id| model.node(*id).map(|n| n.name.as_str()))
+        .collect();
+    let rest = below.len().saturating_sub(names.len());
+    if rest == 0 {
+        format!("Rotates {}.", names.join(", "))
+    } else {
+        format!("Rotates {} +{rest} below.", names.join(", "))
+    }
 }
 
 /// "rotates head, shoulder.R, shoulder.L +4 below", or that it moves nothing.

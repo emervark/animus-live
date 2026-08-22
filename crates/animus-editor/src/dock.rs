@@ -1347,13 +1347,36 @@ impl TabViewer<'_> {
     /// kinematics uses. That matters: what the operator reads in this list is
     /// exactly what a rotation will carry, rather than a second opinion about
     /// the same bones.
+    /// The rig, whatever kind of puppet it belongs to.
+    ///
+    /// **One tree for both.** A mesh puppet's joints are point masses and a
+    /// model's nodes are transforms, and above this line that difference is
+    /// not visible: both carry a `JointId`, both indent by their parent,
+    /// both select, rotate and bind the same way. Two trees would have meant
+    /// two of everything downstream.
     fn rig_tree(&mut self, ui: &mut egui::Ui) {
-        let Some((pid, puppet)) = self.doc.puppets.iter().next() else {
+        // Every puppet, not the first: a show with a cutout and a model has
+        // two rigs, and showing whichever happened to be inserted first is
+        // how the other one becomes unreachable.
+        let puppets: Vec<_> = self.doc.puppets.keys().copied().collect();
+        for pid in puppets {
+            self.one_rig(ui, pid);
+            ui.add_space(theme::S_MD);
+        }
+    }
+
+    fn one_rig(&mut self, ui: &mut egui::Ui, pid: animus_core::ids::PuppetId) {
+        let Some(puppet) = self.doc.puppets.get(&pid) else {
             return;
         };
-        let animus_core::doc::PuppetKind::Mesh(mesh) = &puppet.kind else {
-            return;
+        let mesh = match &puppet.kind {
+            animus_core::doc::PuppetKind::Mesh(m) => m,
+            animus_core::doc::PuppetKind::Model(model) => {
+                self.model_tree(ui, pid, &puppet.name, model);
+                return;
+            }
         };
+        let pid = &pid;
         crate::widgets::panel_header(
             ui,
             &format!("Rig · {}", puppet.name),
@@ -1435,6 +1458,87 @@ impl TabViewer<'_> {
                     theme::HINT,
                 );
             }
+        }
+        if let Some(sel) = clicked {
+            self.state.selection = sel;
+        }
+    }
+
+    /// A model's skeleton, drawn exactly like a mesh puppet's.
+    fn model_tree(
+        &mut self,
+        ui: &mut egui::Ui,
+        pid: animus_core::ids::PuppetId,
+        name: &str,
+        model: &animus_core::doc::ModelPuppet,
+    ) {
+        crate::widgets::panel_header(
+            ui,
+            &format!("Model \u{00b7} {name}"),
+            Some(&format!("{} nodes", model.nodes.len())),
+        );
+        ui.add_space(theme::S_XS);
+
+        if model.nodes.is_empty() {
+            crate::widgets::note(ui, "This model has no named nodes to drive.");
+            return;
+        }
+
+        // Depth by walking up the parents, rather than by recursing: the
+        // list is already in the file's own depth-first order, so the only
+        // thing missing is how far in each row sits.
+        let depth_of = |id: animus_core::ids::JointId| {
+            let mut depth = 0;
+            let mut at = model.node(id).and_then(|n| n.parent);
+            while let Some(parent) = at {
+                depth += 1;
+                at = model.node(parent).and_then(|n| n.parent);
+                if depth > 32 {
+                    break;
+                }
+            }
+            depth
+        };
+
+        let mut clicked = None;
+        for node in &model.nodes {
+            let selected = self.state.selection == Selection::Joint(pid, node.id);
+            let (rect, response) = ui
+                .allocate_exact_size(egui::vec2(ui.available_width(), 22.0), egui::Sense::click());
+            if response.clicked() {
+                clicked = Some(Selection::Joint(pid, node.id));
+            }
+            let p = ui.painter();
+            if selected {
+                p.rect_filled(rect, theme::R_BADGE as f32, theme::SELECT_WASH);
+            } else if response.hovered() {
+                p.rect_filled(rect, theme::R_BADGE as f32, theme::WELL);
+            }
+
+            // Indent stops climbing after ten levels. An exporter's own
+            // scaffolding — `Sketchfab_model / <file>.fbx / RootNode /
+            // rig_CharRoot / Object_4 / _rootJoint` — is six levels deep
+            // before a bone the operator would recognise appears, and a
+            // faithful indent pushes every real name off the panel. Depth
+            // past that point still *reads* as deep; it just stops paying
+            // for it in width.
+            let depth = depth_of(node.id).min(10) as f32;
+            let x = rect.min.x + theme::S_SM + depth * theme::S_SM;
+            let ink = if selected { theme::BRIGHT } else { theme::MID };
+            p.circle_filled(egui::pos2(x, rect.center().y), 2.0, theme::GHOST);
+            let galley = p.layout_no_wrap(
+                node.name.clone(),
+                egui::FontId::proportional(theme::FS_SM + 0.5),
+                ink,
+            );
+            // Clipped, not wrapped: a long bone name should run out of the
+            // row rather than double its height and break the rhythm of a
+            // list forty rows long.
+            p.with_clip_rect(rect.intersect(p.clip_rect())).galley(
+                egui::pos2(x + theme::S_SM, rect.center().y - galley.size().y * 0.5),
+                galley,
+                ink,
+            );
         }
         if let Some(sel) = clicked {
             self.state.selection = sel;
