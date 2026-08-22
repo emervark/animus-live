@@ -50,6 +50,7 @@ impl Plugin for RuntimePlugin {
             .init_resource::<crate::solve::JointTargets>()
             .init_resource::<crate::solve::HeldJoint>()
             .init_resource::<crate::solve::LiveRotations>()
+            .init_resource::<crate::model::ModelSwings>()
             .add_systems(Startup, crate::stage_light::spawn_stage_lights)
             .add_systems(Update, sync_document.in_set(SyncSet::Apply))
             // Discovery first, driving second, and both after the sync that
@@ -59,6 +60,7 @@ impl Plugin for RuntimePlugin {
                 Update,
                 (
                     crate::model::discover_model_nodes,
+                    crate::model::settle_model_swings,
                     crate::model::drive_model_nodes,
                 )
                     .chain()

@@ -110,6 +110,7 @@ impl Plugin for EditorPlugin {
                 (
                     gizmos::draw_stage,
                     gizmos::draw_rigs,
+                    gizmos::draw_model_rigs,
                     gizmos::draw_selection_box,
                     gizmos::draw_rotation_gizmo,
                 )

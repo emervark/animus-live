@@ -8,7 +8,7 @@
 pub mod components;
 pub mod coords;
 pub mod index;
-mod model;
+pub mod model;
 pub mod plugin;
 pub mod project;
 mod project_source;
@@ -24,7 +24,10 @@ pub use components::{
 };
 pub use coords::{img_to_world, img_to_world_angle, world_to_img};
 pub use index::{EntityIndex, PuppetEntities};
-pub use model::{ModelNodes, discover_model_nodes, drive_model_nodes, is_model, model_descendants};
+pub use model::{
+    ModelNodes, ModelSwings, Swing, discover_model_nodes, drive_model_nodes, is_model,
+    model_descendants, settle_model_swings,
+};
 pub use plugin::{RuntimePlugin, SyncSet};
 pub use project::{
     BuildWarnings, DocRevision, DocumentRes, ModelRoot, PendingChangesRes, PuppetTextures,

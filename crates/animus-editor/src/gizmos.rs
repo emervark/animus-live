@@ -561,6 +561,106 @@ pub fn draw_rigs(
     }
 }
 
+/// The same bones and joints, on a glTF model's own skeleton.
+///
+/// **Separate from [`draw_rigs`] because there is nothing to share.** That one
+/// works in image pixels and converts to the stage; a model has no image
+/// space, and its nodes already carry a world transform that the engine
+/// maintains. Trying to route both through one conversion is how a puppet ends
+/// up with one thing's artwork and another thing's rig.
+///
+/// What *is* shared is everything the operator sees: the same ink, the same
+/// joint radius in screen pixels, the same selection ring, the same coral for
+/// a node something is driving right now. A rig looks like a rig.
+///
+/// Drawn in front of the mesh rather than inside it — `depth_bias` in
+/// [`setup`] — for the reason it is drawn in front of a cutout's artwork: a
+/// bone hidden behind an opaque shoulder is a bone the operator cannot aim at.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_model_rigs(
+    mut gizmos: Gizmos,
+    doc: Res<DocumentRes>,
+    state: Res<EditorState>,
+    target: Option<Res<crate::viewport::ViewportTarget>>,
+    swings: Option<Res<animus_runtime::ModelSwings>>,
+    rotations: Option<Res<animus_runtime::LiveRotations>>,
+    roots: Query<(&PuppetRoot, &animus_runtime::ModelNodes)>,
+    globals: Query<&GlobalTransform>,
+) {
+    let world_per_pixel = target.as_ref().map(|t| t.world_per_pixel).unwrap_or(0.01);
+    let joint_radius = crate::rig::JOINT_SCREEN_RADIUS_PX * world_per_pixel;
+
+    for (root, nodes) in &roots {
+        let Some(puppet) = doc.0.puppets.get(&root.0) else {
+            continue;
+        };
+        let PuppetKind::Model(model) = &puppet.kind else {
+            continue;
+        };
+        if !crate::hit::puppet_visible(&doc.0, root.0) {
+            continue;
+        }
+
+        let at = |id: animus_core::ids::JointId| -> Option<Vec3> {
+            let entity = *nodes.by_joint.get(&id)?;
+            Some(globals.get(entity).ok()?.translation())
+        };
+
+        // Bones: one line per parent link, which is the whole skeleton and
+        // exactly the tree the panel indents. A node whose parent is missing
+        // from the scene draws nothing rather than a line to the origin.
+        if state.overlays.bones {
+            let bone = colour(theme::gizmo::BONE);
+            for node in &model.nodes {
+                let (Some(parent), Some(here)) = (node.parent.and_then(at), at(node.id)) else {
+                    continue;
+                };
+                // Zero-length links are the exporter's own scaffolding — a
+                // wrapper node sitting exactly on the thing it wraps. Drawing
+                // them puts a smear of dots at the model's root.
+                if parent.distance_squared(here) > 1e-8 {
+                    gizmos.line(parent, here, bone);
+                }
+            }
+        }
+
+        for node in &model.nodes {
+            let selected = state.selection == Selection::Joint(root.0, node.id);
+            if !state.overlays.joints && !selected {
+                continue;
+            }
+            let Some(pos) = at(node.id) else { continue };
+
+            // Coral for a node that is moving right now, from either source
+            // that can move one: a channel holding it, or a hit still ringing.
+            // The Signal Rule's one gizmo exception, spent on the thing that
+            // is actually live.
+            let turned = rotations
+                .as_ref()
+                .is_some_and(|r| r.get(root.0, node.id).abs() > 1e-4);
+            let swinging = swings
+                .as_ref()
+                .is_some_and(|s| s.angle(root.0, node.id).abs() > 1e-3);
+            let fill = if turned || swinging {
+                theme::gizmo::DRIVEN
+            } else {
+                theme::gizmo::JOINT
+            };
+            dot(&mut gizmos, pos, joint_radius, colour(fill));
+
+            if selected {
+                for r in [1.7, 1.85, 2.0] {
+                    gizmos.circle(
+                        Isometry3d::from_translation(pos),
+                        joint_radius * r,
+                        colour(theme::gizmo::SELECTED_RING),
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Skin mesh vertices on the CPU, in **image space**.
 ///
 /// Mirrors what the GPU does, from the same weights and the same joints. Each

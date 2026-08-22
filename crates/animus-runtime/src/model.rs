@@ -68,6 +68,92 @@ pub struct ModelNodes {
 /// startling thing in the application.
 pub const PX_TO_MODEL: f32 = 0.01;
 
+/// One node's swing: how far it is turned, and how fast.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Swing {
+    pub angle: f32,
+    pub vel: f32,
+}
+
+/// What the sequencer's hits have done to a model, and what is left of them.
+///
+/// **A model needs this and a cutout puppet does not.** The sequencer's whole
+/// design rests on a hit being velocity rather than a pose — the mass-spring
+/// solver takes the energy back out, so nothing anywhere decays anything and
+/// two differently-tuned puppets read as two different characters. A glTF
+/// skeleton has no solver behind it: the physics is two-dimensional and a rig
+/// is not. Left alone, a hit on a model would be a limb that snapped somewhere
+/// and stayed there.
+///
+/// So a model gets the smallest honest substitute: one damped spring per node,
+/// in one dimension — the angle. It is deliberately *under*damped, because a
+/// limb that returns to rest without ever passing it does not read as a limb.
+#[derive(Resource, Debug, Default)]
+pub struct ModelSwings(pub HashMap<(PuppetId, JointId), Swing>);
+
+/// How hard the swing is pulled back to rest, in radians per second squared
+/// per radian. `sqrt` of it is the natural frequency: about eleven radians a
+/// second, so a swing takes a little over half a second to come and go.
+const SWING_STIFFNESS: f32 = 120.0;
+/// And how fast it loses energy, per second. Critical damping here would be
+/// about twenty-two; this is a third of that, which is one clear overshoot and
+/// a small second one — a limb, rather than a door closer.
+const SWING_DAMPING: f32 = 8.0;
+/// Below this the swing is over, and the entry goes rather than being carried
+/// forever at a millionth of a degree.
+const SWING_ASLEEP: f32 = 1e-4;
+
+/// How far a swing released at one radian a second actually gets.
+///
+/// **A kick is speed and a caller means distance.** For an undamped spring the
+/// two are related by the natural frequency alone, but this one is damped on
+/// the way out, so it peaks short of `vel / ω`. The shortfall is fixed by the
+/// two constants above and is measured from them by the test below rather than
+/// guessed — the point of the number is that "swing about twenty-five degrees"
+/// produces about twenty-five degrees, and a caller should not have to know
+/// what a spring is to say it.
+const SWING_REACH: f32 = 0.63 / 10.954;
+
+impl ModelSwings {
+    /// Give a node's swing more speed. Velocity, not a new angle — the same
+    /// distinction `SolverState::kick` makes and for the same reason.
+    pub fn kick(&mut self, puppet: PuppetId, joint: JointId, by: f32) {
+        self.0.entry((puppet, joint)).or_default().vel += by;
+    }
+
+    /// Kick a node hard enough that its swing reaches about `peak` radians.
+    ///
+    /// The conversion lives here, beside the constants that decide it, so that
+    /// a caller can ask for a gesture in the unit a gesture is measured in.
+    pub fn swing_to(&mut self, puppet: PuppetId, joint: JointId, peak: f32) {
+        self.kick(puppet, joint, peak / SWING_REACH);
+    }
+
+    pub fn angle(&self, puppet: PuppetId, joint: JointId) -> f32 {
+        self.0.get(&(puppet, joint)).map(|s| s.angle).unwrap_or(0.0)
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Let every swing swing.
+pub fn settle_model_swings(time: Res<Time>, mut swings: ResMut<ModelSwings>) {
+    // Clamped because a frame that took a quarter of a second — a window
+    // dragged, a shader compiled — would otherwise integrate the spring past
+    // stability and fling every limb off the stage.
+    let dt = time.delta_secs().min(1.0 / 30.0);
+    if dt <= 0.0 {
+        return;
+    }
+    swings.0.retain(|_, s| {
+        s.vel += (-SWING_STIFFNESS * s.angle - SWING_DAMPING * s.vel) * dt;
+        s.angle += s.vel * dt;
+        s.angle.abs() > SWING_ASLEEP || s.vel.abs() > SWING_ASLEEP
+    });
+}
+
 /// Find the scene entities the document's nodes name.
 pub fn discover_model_nodes(
     mut commands: Commands,
@@ -140,6 +226,7 @@ pub fn discover_model_nodes(
 /// because a model's node is a joint like any other.
 pub fn drive_model_nodes(
     rotations: Res<LiveRotations>,
+    swings: Res<ModelSwings>,
     targets: Res<JointTargets>,
     held: Res<HeldJoint>,
     doc: Res<DocumentRes>,
@@ -161,7 +248,10 @@ pub fn drive_model_nodes(
                 continue;
             };
 
-            let angle = rotations.get(root.0, node.id);
+            // Added, not chosen between: a bound channel says where the limb
+            // is held and a hit says what just happened to it, and a pattern
+            // playing under a fader that is being ridden has to be both.
+            let angle = rotations.get(root.0, node.id) + swings.angle(root.0, node.id);
             // A target is an absolute image-space position for a mesh
             // puppet; for a model node there is no image space, so what is
             // meaningful is how far it is from the node's own rest — which
@@ -322,6 +412,78 @@ mod tests {
         let rest = Quat::from_euler(EulerRot::XYZ, 0.3, -1.2, 2.0);
         let turn = stage_turn(rest, 0.6);
         assert!((turn.to_axis_angle().1 - 0.6).abs() < 1e-4);
+    }
+
+    /// Half a degree: below this the limb has stopped as far as anyone
+    /// watching is concerned. [`SWING_ASLEEP`] is much smaller because it
+    /// decides when the bookkeeping entry goes, which is a different question
+    /// and costs nothing to answer late.
+    const VISIBLE: f32 = 0.0087;
+
+    /// Integrate the swing the way the system does, and report where it got
+    /// to and when it stopped being visible.
+    fn swing_out(peak: f32) -> (f32, f32) {
+        let mut s = Swing {
+            angle: 0.0,
+            vel: peak / SWING_REACH,
+        };
+        let dt = 1.0 / 120.0;
+        let (mut furthest, mut t, mut settled) = (0.0f32, 0.0f32, 0.0f32);
+        while t < 5.0 {
+            s.vel += (-SWING_STIFFNESS * s.angle - SWING_DAMPING * s.vel) * dt;
+            s.angle += s.vel * dt;
+            furthest = furthest.max(s.angle.abs());
+            t += dt;
+            if s.angle.abs() > VISIBLE {
+                settled = t;
+            }
+        }
+        (furthest, settled)
+    }
+
+    /// **A hit asks for a gesture and gets one of that size.** `swing_to` is
+    /// only useful if the number it takes is the number that arrives; a
+    /// conversion that was quietly a tenth of what it claimed is how a
+    /// sequencer ends up looking like it does nothing.
+    #[test]
+    fn a_swing_reaches_about_as_far_as_it_was_asked_to() {
+        for asked in [0.1, 0.44, 1.0] {
+            let (got, _) = swing_out(asked);
+            let error = (got - asked).abs() / asked;
+            assert!(error < 0.08, "asked {asked}, reached {got}");
+        }
+    }
+
+    /// And it comes back. A hit that left a limb somewhere would turn a
+    /// pattern into a drift, and by the second bar the puppet would be facing
+    /// the wrong way.
+    #[test]
+    fn a_swing_is_over_within_a_bar() {
+        let (_, settled) = swing_out(0.44);
+        assert!(
+            (0.3..1.6).contains(&settled),
+            "a gesture, not a twitch and not a drift: {settled}s"
+        );
+    }
+
+    /// Underdamped on purpose: a limb that returns to rest without ever
+    /// passing it does not read as a limb, it reads as a door closer.
+    #[test]
+    fn a_swing_passes_rest_on_its_way_back() {
+        let mut s = Swing {
+            angle: 0.0,
+            vel: 0.44 / SWING_REACH,
+        };
+        let dt = 1.0 / 120.0;
+        let mut overshot = false;
+        for _ in 0..600 {
+            s.vel += (-SWING_STIFFNESS * s.angle - SWING_DAMPING * s.vel) * dt;
+            s.angle += s.vel * dt;
+            if s.angle < -1e-3 {
+                overshot = true;
+            }
+        }
+        assert!(overshot, "it should swing past rest at least once");
     }
 
     #[test]

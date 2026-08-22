@@ -1061,6 +1061,13 @@ pub fn keyboard_shortcuts(
 /// visually almost nothing. A shove across it swings the limb, which is what
 /// a hit on a drum machine is supposed to look like. The operator can point
 /// it anywhere afterwards; this is only where it starts.
+/// How hard a new track hits, in image pixels.
+///
+/// Big enough to read on a two-thousand-pixel drawing, small enough not to
+/// throw the limb off the stage. A model reads the same number as a swing —
+/// see `sequencer::RAD_PER_PIXEL`.
+const TRACK_SHOVE_PX: f32 = 24.0;
+
 fn add_track_for_selection(
     seq: &mut animus_runtime::Sequencer,
     doc: &DocumentRes,
@@ -1070,8 +1077,26 @@ fn add_track_for_selection(
         warn!("select a joint first: a track is a limb, and a limb needs a joint");
         return;
     };
-    let Some(PuppetKind::Mesh(mesh)) = doc.0.puppets.get(&puppet).map(|p| &p.kind) else {
-        return;
+    let mesh = match doc.0.puppets.get(&puppet).map(|p| &p.kind) {
+        Some(PuppetKind::Mesh(mesh)) => mesh,
+        Some(PuppetKind::Model(model)) => {
+            let Some(node) = model.node(joint) else {
+                return;
+            };
+            // Straight across the bone. A model's track vector is read in the
+            // bone's own frame — x along it, y across — so "across" is the
+            // same instruction whichever way the limb happens to point, and a
+            // left arm and a right arm swing as mirrors of each other without
+            // anything here having to know which is which.
+            seq.add_track(
+                node.name.clone(),
+                puppet,
+                joint,
+                Vec2::new(0.0, TRACK_SHOVE_PX),
+            );
+            return;
+        }
+        None => return,
     };
     let Some(j) = mesh.skeleton.joints.get(&joint) else {
         return;
@@ -1087,7 +1112,7 @@ fn add_track_for_selection(
         .unwrap_or(Vec2::Y);
     // Perpendicular, at a size that reads on a 2000px drawing without
     // throwing the limb off the stage.
-    let dir = Vec2::new(-along.y, along.x) * 24.0;
+    let dir = Vec2::new(-along.y, along.x) * TRACK_SHOVE_PX;
 
     seq.add_track(j.name.clone(), puppet, joint, dir);
 }

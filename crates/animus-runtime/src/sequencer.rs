@@ -324,6 +324,7 @@ pub fn run_sequencer(
         &crate::components::CompiledRigRef,
         &mut crate::components::PuppetSolver,
     )>,
+    mut swings: ResMut<crate::model::ModelSwings>,
 ) {
     // The flash lasts one frame and is cleared whether or not the transport
     // is running, so stopping mid-bar does not leave a row lit.
@@ -340,7 +341,16 @@ pub fn run_sequencer(
         let selected = seq.selected;
         if let Some(track) = seq.tracks.get(selected) {
             let (puppet, joint, dir) = (track.puppet, track.joint, track.dir);
-            strike(&doc, &held, &mut solvers, puppet, joint, dir, FULL);
+            strike(
+                &doc,
+                &held,
+                &mut solvers,
+                &mut swings,
+                puppet,
+                joint,
+                dir,
+                FULL,
+            );
             if let Some(f) = seq.fired.get_mut(selected) {
                 *f = FULL;
             }
@@ -383,12 +393,32 @@ pub fn run_sequencer(
             continue;
         }
         let (puppet, joint, dir) = (track.puppet, track.joint, track.dir);
-        strike(&doc, &held, &mut solvers, puppet, joint, dir, velocity);
+        strike(
+            &doc,
+            &held,
+            &mut solvers,
+            &mut swings,
+            puppet,
+            joint,
+            dir,
+            velocity,
+        );
         if let Some(f) = seq.fired.get_mut(i) {
             *f = velocity;
         }
     }
 }
+
+/// How much of a turn one image pixel of a track's shove is worth on a model.
+///
+/// **A model has no image space**, so the number a track carries has to mean
+/// something else there. It means the same *gesture*: a shove across the limb
+/// rather than along it, which on a rig is a turn — a bone's tip only ever
+/// moves perpendicular to the bone, so "shove it sideways" and "rotate it" are
+/// the same instruction said twice. The default twenty-four pixel track
+/// therefore arrives as a swing of about twenty-five degrees, which is a
+/// gesture rather than a spasm.
+pub const RAD_PER_PIXEL: f32 = 0.0182;
 
 /// Deliver one hit: the joint and everything below it, softening with depth.
 #[allow(clippy::too_many_arguments)]
@@ -400,15 +430,19 @@ fn strike(
         &crate::components::CompiledRigRef,
         &mut crate::components::PuppetSolver,
     )>,
+    swings: &mut crate::model::ModelSwings,
     puppet: PuppetId,
     joint: JointId,
     dir: Vec2,
     velocity: f32,
 ) {
-    let Some(animus_core::doc::PuppetKind::Mesh(mesh)) =
-        doc.0.puppets.get(&puppet).map(|p| &p.kind)
-    else {
-        return;
+    let mesh = match doc.0.puppets.get(&puppet).map(|p| &p.kind) {
+        Some(animus_core::doc::PuppetKind::Mesh(mesh)) => mesh,
+        Some(animus_core::doc::PuppetKind::Model(model)) => {
+            strike_model(held, swings, model, puppet, joint, dir, velocity);
+            return;
+        }
+        None => return,
     };
     // Derived from the bone graph, the same way forward kinematics derives
     // it, so what a hit carries and what a rotation carries are the same set
@@ -438,6 +472,41 @@ fn strike(
                 .0
                 .kick(dense, dir * velocity * FALLOFF.powi(*depth as i32));
         }
+    }
+}
+
+/// The same hit, on a rig the solver does not own.
+///
+/// The chain and the falloff are identical — a hit at a shoulder carries the
+/// arm, softer the further down it goes — and so is the rule that the hand
+/// wins. What differs is only what a hit *is*: a turn given speed rather than
+/// a point given speed, because a bone is a rotation and a joint is a mass.
+///
+/// The turn compounds down the chain rather than being shared out, and that is
+/// on purpose: each bone adds its own share on top of everything its parents
+/// did, which is what makes a limb whip rather than swing rigidly.
+fn strike_model(
+    held: &HeldJoint,
+    swings: &mut crate::model::ModelSwings,
+    model: &animus_core::doc::ModelPuppet,
+    puppet: PuppetId,
+    joint: JointId,
+    dir: Vec2,
+    velocity: f32,
+) {
+    // `dir.y` alone: on a model the track's vector is read in the bone's own
+    // frame, where x runs along the bone and y across it. Along the bone is a
+    // stretch, which a rig cannot do, so only the across part means anything.
+    let turn = dir.y * RAD_PER_PIXEL * velocity;
+    if turn == 0.0 {
+        return;
+    }
+    let chain = std::iter::once((joint, 0)).chain(model.descendants_with_depth(joint));
+    for (id, depth) in chain {
+        if held.0 == Some((puppet, id)) {
+            continue;
+        }
+        swings.swing_to(puppet, id, turn * FALLOFF.powi(depth as i32));
     }
 }
 

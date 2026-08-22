@@ -2533,15 +2533,26 @@ pub fn draw(
             );
         });
 
-    // The launcher drives one puppet; name it rather than leaving the
-    // operator to infer it from what moves.
-    let puppet_name = doc
-        .0
-        .puppets
-        .values()
-        .next()
-        .map(|p| p.name.clone())
-        .unwrap_or_else(|| "no puppet".into());
+    // Name what the pattern actually drives, which is whatever its tracks
+    // belong to — not "the first puppet in the document". A show with a
+    // cutout and a model has two, and a header that names whichever was
+    // inserted first is a header that is wrong half the time and confidently
+    // wrong the rest of it.
+    let puppet_name = {
+        let mut named: Vec<&str> = Vec::new();
+        for track in &seq.tracks {
+            if let Some(p) = doc.0.puppets.get(&track.puppet)
+                && !named.contains(&p.name.as_str())
+            {
+                named.push(&p.name);
+            }
+        }
+        match named.len() {
+            0 => String::new(),
+            1 => named[0].to_string(),
+            n => format!("{n} puppets"),
+        }
+    };
 
     // **Draggable, not fixed.** A pattern with more tracks than fit is the
     // normal case once a puppet has a few limbs, and the alternative to

@@ -70,13 +70,29 @@ impl ModelPuppet {
     /// `parent` points back into its own chain — which a hand-edited file can
     /// express — stops the walk rather than looping forever.
     pub fn descendants(&self, id: JointId) -> Vec<JointId> {
-        let mut out = Vec::new();
-        let mut frontier = vec![id];
-        while let Some(at) = frontier.pop() {
+        self.descendants_with_depth(id)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    /// The same walk, keeping how far below `id` each node sits.
+    ///
+    /// The depth is what a hit fades by: a shove at a shoulder should reach
+    /// the hand later and softer, and "how many joints away" is the only
+    /// measure of that which does not depend on how long anyone drew the
+    /// bones.
+    pub fn descendants_with_depth(&self, id: JointId) -> Vec<(JointId, usize)> {
+        let mut out: Vec<(JointId, usize)> = Vec::new();
+        let mut frontier = vec![(id, 0usize)];
+        while let Some((at, depth)) = frontier.pop() {
             for node in &self.nodes {
-                if node.parent == Some(at) && node.id != id && !out.contains(&node.id) {
-                    out.push(node.id);
-                    frontier.push(node.id);
+                if node.parent == Some(at)
+                    && node.id != id
+                    && !out.iter().any(|(seen, _)| *seen == node.id)
+                {
+                    out.push((node.id, depth + 1));
+                    frontier.push((node.id, depth + 1));
                 }
             }
         }
