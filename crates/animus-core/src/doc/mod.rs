@@ -26,7 +26,7 @@ pub use mesh_puppet::{
     AlphaModeCfg, Attachment, AttachmentTable, AutoMeshMode, AutoMeshParams, Bone, Joint,
     MaterialCfg, MatteMode, MatteParams, MeshData, MeshPuppet, MeshSource, SkeletonData,
 };
-pub use model_puppet::{DrivenJoint, ModelPuppet};
+pub use model_puppet::{DrivenJoint, ModelNode, ModelPuppet};
 pub use puppet::{Puppet, PuppetKind};
 pub use solver_cfg::SolverConfig;
 pub use stage::StageConfig;

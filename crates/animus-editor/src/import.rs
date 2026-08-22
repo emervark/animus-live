@@ -68,6 +68,8 @@ pub enum ImportFailure {
     Read(String, std::io::Error),
     #[error("could not store the image: {0}")]
     Store(#[from] animus_project::ProjectError),
+    #[error("{0}")]
+    Model(#[from] animus_core::gltf::GltfError),
 }
 
 /// Turn a file on disk into a command that adds a puppet.
@@ -124,6 +126,82 @@ pub fn build_import(
             target: ImportTarget::NewLayer(layer),
         },
         imported,
+    ))
+}
+
+/// What a dropped file is, decided by its extension.
+///
+/// By extension and not by sniffing the bytes: a `.gltf` is JSON and a
+/// `.glb` is a container, so content-sniffing would need two probes to
+/// answer a question the file name already answers. An unknown extension is
+/// refused by name, which is a better error than "could not decode".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dropped {
+    Image,
+    Model,
+}
+
+pub fn kind_of(path: &Path) -> Option<Dropped> {
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())?;
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "webp" | "tga" | "bmp" => Some(Dropped::Image),
+        "gltf" | "glb" => Some(Dropped::Model),
+        _ => None,
+    }
+}
+
+/// Turn a dropped glTF into the same kind of command a PNG produces.
+///
+/// **Deliberately the same shape as [`build_import`]**: one asset, one
+/// puppet, one new layer, one undoable command. A model and a cutout are
+/// different things to the renderer and the same thing to the document, and
+/// keeping the import paths parallel is what makes them stay that way.
+pub fn build_model_import(
+    path: &Path,
+    project: &mut Project,
+    store: &mut AssetStore,
+) -> Result<(ImportImage, animus_core::gltf::ModelOutline), ImportFailure> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+
+    let bytes =
+        std::fs::read(path).map_err(|e| ImportFailure::Read(path.display().to_string(), e))?;
+
+    // Read the structure first, so a model with nothing named is refused
+    // before any bytes are written. Importing and then failing would leave
+    // orphaned bytes in the bundle.
+    let mut alloc = animus_core::ids::IdAlloc::from_next(project.next_id);
+    let outline = animus_core::gltf::outline(&bytes, &mut alloc)?;
+    project.next_id = alloc.peek();
+
+    let asset_id = AssetId(project.alloc_id());
+    let asset = store.import_model(path, asset_id)?;
+
+    let mut model = animus_core::doc::ModelPuppet::new(asset_id);
+    model.nodes = outline.nodes.clone();
+    // The first clip, if there is one: a model that ships with an animation
+    // almost always means it to be the idle, and leaving it stopped makes an
+    // import look like it failed.
+    model.animation = outline.animations.first().cloned();
+
+    let puppet = Puppet {
+        id: PuppetId(project.alloc_id()),
+        name: display_name(&name),
+        kind: PuppetKind::Model(model),
+    };
+    let layer = Layer::new(LayerId(project.alloc_id()), display_name(&name));
+
+    Ok((
+        ImportImage {
+            asset,
+            puppet,
+            target: ImportTarget::NewLayer(layer),
+        },
+        outline,
     ))
 }
 
@@ -216,6 +294,34 @@ pub fn handle_dropped_files(
         };
 
         let mut store = AssetStore::new(&root.0);
+
+        if kind_of(path_buf) == Some(Dropped::Model) {
+            match build_model_import(path_buf, &mut doc.0, &mut store) {
+                Ok((command, outline)) => {
+                    let label = format!(
+                        "{} imported: {} node(s), {} clip(s)",
+                        command.puppet.name,
+                        outline.nodes.len(),
+                        outline.animations.len()
+                    );
+                    match animus_core::doc::apply_command(
+                        &mut doc.0,
+                        &mut state.undo,
+                        Box::new(command),
+                    ) {
+                        Ok(changes) => {
+                            pending.extend(changes.0);
+                            state.undo.break_merge();
+                            status.ok(label);
+                        }
+                        Err(e) => status.error(format!("could not add the model: {e}")),
+                    }
+                }
+                Err(e) => status.error(e.to_string()),
+            }
+            continue;
+        }
+
         match build_import(path_buf, &mut doc.0, &mut store) {
             Ok((command, imported)) => {
                 // The GPU texture, from the same bytes the mesh came from.
@@ -370,5 +476,132 @@ mod tests {
         assert_eq!(display_name("dancer.png"), "dancer");
         assert_eq!(display_name("dancer"), "dancer");
         assert_eq!(display_name(".png"), ".png");
+    }
+
+    /// A small but real glTF, written here rather than committed, so the
+    /// test exercises the format and not an exporter's habits.
+    fn write_gltf(dir: &Path, name: &str) -> PathBuf {
+        let doc = r#"{
+          "asset": { "version": "2.0" },
+          "scene": 0,
+          "scenes": [ { "nodes": [0] } ],
+          "nodes": [
+            { "name": "root",  "children": [1] },
+            { "name": "spine", "children": [2] },
+            { "name": "head" }
+          ],
+          "animations": [
+            { "name": "sway", "channels": [], "samplers": [] }
+          ]
+        }"#;
+        let path = dir.join(name);
+        std::fs::write(&path, doc).unwrap();
+        path
+    }
+
+    /// **A model arrives exactly the way a cutout does**: one asset, one
+    /// puppet, one new layer, one undoable command. Keeping the two import
+    /// paths the same shape is what lets one rig tree and one binding path
+    /// serve both.
+    #[test]
+    fn a_gltf_becomes_a_model_puppet_in_its_own_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_gltf(dir.path(), "crow.gltf");
+        let mut project = Project::new("Models");
+        let mut store = AssetStore::new(dir.path());
+
+        let (command, outline) =
+            build_model_import(&path, &mut project, &mut store).expect("imports");
+
+        assert_eq!(command.puppet.name, "crow");
+        assert!(matches!(command.target, ImportTarget::NewLayer(_)));
+        assert_eq!(command.asset.kind, AssetKind::Gltf);
+
+        let PuppetKind::Model(model) = &command.puppet.kind else {
+            panic!("a glTF must import as a model, not a mesh");
+        };
+        assert_eq!(model.nodes.len(), 3);
+        assert_eq!(model.nodes[0].name, "root");
+        assert_eq!(
+            model.animation.as_deref(),
+            Some("sway"),
+            "a model that ships with a clip should not import stopped"
+        );
+        assert_eq!(outline.animations.len(), 1);
+    }
+
+    /// Ids come from the document, so a model imported into a project that
+    /// already has puppets cannot collide with them.
+    #[test]
+    fn two_models_never_share_node_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = write_gltf(dir.path(), "one.gltf");
+        let b = write_gltf(dir.path(), "two.gltf");
+        let mut project = Project::new("Models");
+        let mut store = AssetStore::new(dir.path());
+
+        let (first, _) = build_model_import(&a, &mut project, &mut store).unwrap();
+        let (second, _) = build_model_import(&b, &mut project, &mut store).unwrap();
+
+        let (PuppetKind::Model(m1), PuppetKind::Model(m2)) =
+            (&first.puppet.kind, &second.puppet.kind)
+        else {
+            panic!("both are models");
+        };
+        for node in &m1.nodes {
+            assert!(
+                !m2.nodes.iter().any(|n| n.id == node.id),
+                "id {:?} was handed out twice",
+                node.id
+            );
+        }
+    }
+
+    /// The store keeps the bytes, so the model still loads after a restart.
+    #[test]
+    fn the_model_bytes_land_in_the_bundle() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_gltf(dir.path(), "crow.gltf");
+        let mut project = Project::new("Models");
+        let mut store = AssetStore::new(dir.path());
+
+        let (command, _) = build_model_import(&path, &mut project, &mut store).unwrap();
+        assert!(
+            store.path_for(&command.asset).exists(),
+            "the bundle must hold the model, not a path to wherever it was dropped from"
+        );
+    }
+
+    /// **Nothing named means nothing drivable**, and saying so beats
+    /// importing something inert and leaving the operator to work out why
+    /// the rig tree is empty.
+    #[test]
+    fn a_model_with_no_named_nodes_is_refused_before_anything_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unnamed.gltf");
+        std::fs::write(
+            &path,
+            r#"{ "asset": { "version": "2.0" }, "scene": 0,
+                 "scenes": [ { "nodes": [0] } ], "nodes": [ { } ] }"#,
+        )
+        .unwrap();
+        let mut project = Project::new("Models");
+        let mut store = AssetStore::new(dir.path());
+
+        let err = build_model_import(&path, &mut project, &mut store).expect_err("must refuse");
+        assert!(err.to_string().contains("node names"), "{err}");
+        assert!(
+            !dir.path().join("assets").exists(),
+            "nothing may be written when the import is refused"
+        );
+    }
+
+    #[test]
+    fn the_extension_decides_which_importer_runs() {
+        assert_eq!(kind_of(Path::new("a/b/crow.glb")), Some(Dropped::Model));
+        assert_eq!(kind_of(Path::new("a/b/crow.GLTF")), Some(Dropped::Model));
+        assert_eq!(kind_of(Path::new("a/b/dancer.png")), Some(Dropped::Image));
+        assert_eq!(kind_of(Path::new("a/b/notes.txt")), None);
+        assert_eq!(kind_of(Path::new("a/b/noext")), None);
     }
 }

@@ -129,6 +129,75 @@ pub fn puppet_pivot(mp: &MeshPuppet) -> Vec2 {
     (min + max) * 0.5
 }
 
+/// Marks a puppet root that holds a glTF scene rather than a skinned mesh.
+#[derive(Component, Debug)]
+pub struct ModelRoot;
+
+fn model_puppet(doc: &Project, id: PuppetId) -> Option<&animus_core::doc::ModelPuppet> {
+    match &doc.puppets.get(&id)?.kind {
+        PuppetKind::Model(m) => Some(m),
+        PuppetKind::Mesh(_) => None,
+    }
+}
+
+/// Put a glTF on the stage.
+///
+/// The scene is handed to Bevy to load, because a model is not one file: it
+/// pulls in buffers, textures and materials by relative path, and the asset
+/// server is the thing that knows how. It arrives asynchronously, which is
+/// why the root exists before the scene does — the layer transform, the
+/// visibility and the id are all on the root, so the model inherits them
+/// whenever it turns up rather than needing to be caught at the moment it
+/// does.
+fn spawn_model(
+    commands: &mut Commands,
+    doc: &Project,
+    id: PuppetId,
+    model: &animus_core::doc::ModelPuppet,
+    index: &mut EntityIndex,
+    asset_server: &AssetServer,
+) {
+    let Some(asset) = doc.assets.get(&model.asset) else {
+        error!("model {id:?} refers to an asset this project does not have");
+        return;
+    };
+
+    let root = commands
+        .spawn((
+            PuppetRoot(id),
+            ModelRoot,
+            root_transform(doc, id),
+            layer_visibility(doc, id),
+        ))
+        .id();
+    if let Some(lid) = layer_of(doc, id) {
+        commands.entity(root).insert(LayerOf(lid));
+    }
+
+    // `GltfAssetLabel` builds the sub-asset fragment rather than this
+    // formatting one by hand: the label is Bevy's own spelling of "the nth
+    // scene in this file", and a hand-written `#Scene0` that drifted from it
+    // would fail as a missing asset with nothing to say why.
+    let uri = crate::project_source::asset_uri(asset, "");
+    let path = bevy::gltf::GltfAssetLabel::Scene(model.scene_index).from_asset(uri);
+    let scene = commands
+        .spawn((
+            bevy::world_serialization::WorldAssetRoot(asset_server.load(path)),
+            ChildOf(root),
+            Transform::default(),
+        ))
+        .id();
+
+    index.puppets.insert(
+        id,
+        PuppetEntities {
+            root,
+            mesh: scene,
+            bones: Vec::new(),
+        },
+    );
+}
+
 fn mesh_puppet(doc: &Project, id: PuppetId) -> Option<&MeshPuppet> {
     match &doc.puppets.get(&id)?.kind {
         PuppetKind::Mesh(m) => Some(m),
@@ -195,6 +264,7 @@ pub fn sync_document(
     mut warnings: ResMut<BuildWarnings>,
     textures: Option<Res<PuppetTextures>>,
     scale: Res<RenderScale>,
+    asset_server: Res<AssetServer>,
 ) {
     if pending.0.is_empty() {
         return;
@@ -262,6 +332,7 @@ pub fn sync_document(
                     &mut warnings,
                     textures.as_deref(),
                     &scale,
+                    &asset_server,
                 );
             }
         }
@@ -285,6 +356,7 @@ pub fn sync_document(
                     &mut warnings,
                     textures.as_deref(),
                     &scale,
+                    &asset_server,
                 );
             }
             Work::Skeleton => {
@@ -300,6 +372,7 @@ pub fn sync_document(
                     &mut warnings,
                     textures.as_deref(),
                     &scale,
+                    &asset_server,
                 );
             }
             Work::Rig => rebuild_rig(&mut commands, &doc.0, id, &index, &mut bindposes, &scale),
@@ -408,7 +481,17 @@ fn spawn_puppet(
     warnings: &mut BuildWarnings,
     textures: Option<&PuppetTextures>,
     scale: &RenderScale,
+    asset_server: &AssetServer,
 ) {
+    // A model puppet takes an entirely different route: no mesh to build,
+    // no solver to compile, no bones to spawn. What it shares with a mesh
+    // puppet is everything *above* here — an id, a layer, a transform — and
+    // that shared part is what lets one rig tree, one inspector and one
+    // binding path serve both.
+    if let Some(model) = model_puppet(doc, id) {
+        spawn_model(commands, doc, id, model, index, asset_server);
+        return;
+    }
     let Some(mp) = mesh_puppet(doc, id) else {
         return;
     };

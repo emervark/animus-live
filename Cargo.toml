@@ -47,6 +47,13 @@ bevy        = "=0.19.1"
 bevy_egui   = "=0.40"
 egui        = "=0.34"
 
+# --- 3D models ---
+# Reading a glTF's node names at import time, so the model's own skeleton
+# can be given ids before anything is spawned. Bevy loads the geometry;
+# this reads the structure, and it does so without an engine so the import
+# path stays testable.
+gltf        = { version = "1.4", default-features = false, features = ["import", "utils", "names"] }
+
 # --- live input ---
 # MIDI in through the platform's own API (winmm on Windows, ALSA on Linux,
 # CoreMIDI on macOS); OSC is plain UDP with a pure-Rust codec, so neither

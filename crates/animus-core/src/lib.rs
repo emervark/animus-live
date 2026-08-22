@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod doc;
+pub mod gltf;
 pub mod ids;
 pub mod image_in;
 pub mod mesh;

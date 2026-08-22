@@ -56,6 +56,15 @@ fn main() {
     }
 
     let mut app = App::new();
+
+    // **Before `DefaultPlugins`, and it has to be.** Bevy builds its asset
+    // sources once, inside `AssetPlugin`; a source registered afterwards is
+    // a source nothing will ever read from. This one lets the asset server
+    // reach into the open bundle, which is how a glTF finds its buffers and
+    // textures — a PNG never needed it, because a PNG is one file.
+    let asset_root = animus_runtime::register_asset_source(&mut app);
+    asset_root.set(root.clone());
+
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {
@@ -83,6 +92,7 @@ fn main() {
     .add_plugins(EditorPlugin)
     .add_plugins(OutputPlugin)
     .insert_resource(ProjectRoot(root))
+    .insert_resource(asset_root)
     // A project opened by name has a location the operator chose; an untitled
     // one only has a placeholder, so Save must ask before writing anywhere.
     .insert_resource(animus_editor::files::ProjectSaved(cli.project.is_some()))

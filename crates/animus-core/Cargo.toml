@@ -16,6 +16,7 @@ spade.workspace = true
 i_overlay.workspace = true
 imageproc.workspace = true
 image.workspace = true
+gltf.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]

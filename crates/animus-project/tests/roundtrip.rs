@@ -116,6 +116,13 @@ fn a_model_puppet_round_trips_through_save_and_load() {
         asset: texture_id,
         scene_index: 2,
         animation: Some("Walk".into()),
+        // A model's own skeleton, with the ids this document gave it: the
+        // thing a binding actually refers to, so it has to survive the disk.
+        nodes: vec![animus_core::doc::ModelNode {
+            id: animus_core::ids::JointId(4242),
+            name: "Head".into(),
+            parent: None,
+        }],
         driven_joints: vec![DrivenJoint {
             node_name: "Head".into(),
             channel: "look_at".into(),

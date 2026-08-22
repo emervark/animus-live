@@ -218,6 +218,7 @@ version = "0.1.0"
 dependencies = [
  "approx",
  "glam 0.32.1",
+ "gltf",
  "i_overlay",
  "image",
  "imageproc",
@@ -278,6 +279,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 2.0.20",
+ "tracing",
 ]
 
 [[package]]
@@ -577,6 +579,12 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
+
+[[package]]
+name = "base64"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
 
 [[package]]
 name = "base64"
@@ -1151,7 +1159,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d17df73b26adfb8be89f0716b8667c60660bdd2d589863b8901caca58c99841"
 dependencies = [
  "async-lock",
- "base64",
+ "base64 0.22.1",
  "bevy_animation",
  "bevy_app",
  "bevy_asset",
@@ -3298,10 +3306,13 @@ version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3ce1918195723ce6ac74e80542c5a96a40c2b26162c1957a5cd70799b8cacf7"
 dependencies = [
+ "base64 0.13.1",
  "byteorder",
  "gltf-json",
+ "image",
  "lazy_static",
  "serde_json",
+ "urlencoding",
 ]
 
 [[package]]

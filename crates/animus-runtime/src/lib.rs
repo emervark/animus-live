@@ -10,6 +10,7 @@ pub mod coords;
 pub mod index;
 pub mod plugin;
 pub mod project;
+mod project_source;
 pub mod sequencer;
 mod signal;
 pub mod skinning;
@@ -26,6 +27,7 @@ pub use project::{
     BuildWarnings, DocRevision, DocumentRes, PendingChangesRes, PuppetTextures, RenderScale,
     puppet_pivot, sync_document,
 };
+pub use project_source::{ProjectAssetRoot, asset_uri, register as register_asset_source};
 pub use sequencer::{
     FALLOFF, FULL, GHOST, Quantize, STEP_COUNTS, Sequencer, SequencerPlugin, SequencerSet,
     TRACK_INKS, Track, run_sequencer,
