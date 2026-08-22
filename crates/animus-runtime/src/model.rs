@@ -42,6 +42,22 @@ pub struct ModelNodes {
     /// would throw away the bind pose — a shoulder that is meant to sit at
     /// forty degrees would snap to zero the moment anything drove it.
     pub rest: HashMap<JointId, Transform>,
+    /// Each node's rest orientation in world terms, accumulated down the
+    /// hierarchy as the nodes are found.
+    ///
+    /// **Needed because a bone's own axes are not the stage's axes.** A rig's
+    /// local frames run along the bones, so "rotate about Z" means something
+    /// different at every joint: on a spine it folds the torso forward, on an
+    /// upper arm it twists. What an operator asks for on a stage is a turn in
+    /// the plane the audience sees, which is a rotation about *world* Z — and
+    /// converting that into a local one needs to know how the node is
+    /// oriented to begin with.
+    ///
+    /// Accumulated here rather than read from `GlobalTransform`, because a
+    /// scene that spawned this frame has not been through transform
+    /// propagation yet, and a rest orientation captured as identity is a bone
+    /// that turns the wrong way for the rest of the session.
+    pub world_rest: HashMap<JointId, Quat>,
 }
 
 /// How far a bound position offset moves a model node, per image pixel.
@@ -59,6 +75,7 @@ pub fn discover_model_nodes(
     roots: Query<(Entity, &PuppetRoot, Option<&ModelNodes>), With<ModelRoot>>,
     children: Query<&Children>,
     named: Query<(&Name, &Transform)>,
+    transforms: Query<&Transform>,
 ) {
     for (entity, root, found) in &roots {
         let Some(PuppetKind::Model(model)) = doc.0.puppets.get(&root.0).map(|p| &p.kind) else {
@@ -74,16 +91,24 @@ pub fn discover_model_nodes(
 
         let mut by_joint = HashMap::default();
         let mut rest = HashMap::default();
-        let mut stack = vec![entity];
-        while let Some(at) = stack.pop() {
+        let mut world_rest = HashMap::default();
+        // The orientation each entity inherits travels down with it, so a
+        // node's rest-in-world falls out of the same walk that finds it.
+        let mut stack = vec![(entity, Quat::IDENTITY)];
+        while let Some((at, above)) = stack.pop() {
+            let here = match transforms.get(at) {
+                Ok(t) => above * t.rotation,
+                Err(_) => above,
+            };
             if let Ok((name, transform)) = named.get(at)
                 && let Some(node) = model.node_named(name.as_str())
             {
                 by_joint.insert(node.id, at);
                 rest.insert(node.id, *transform);
+                world_rest.insert(node.id, here);
             }
             if let Ok(kids) = children.get(at) {
-                stack.extend(kids.iter());
+                stack.extend(kids.iter().map(|k| (k, here)));
             }
         }
 
@@ -91,9 +116,11 @@ pub fn discover_model_nodes(
             continue;
         }
         let located = by_joint.len();
-        commands
-            .entity(entity)
-            .insert(ModelNodes { by_joint, rest });
+        commands.entity(entity).insert(ModelNodes {
+            by_joint,
+            rest,
+            world_rest,
+        });
         if located < model.nodes.len() {
             // Said once, when it settles: a model that is half-findable is a
             // model half its rig will silently refuse to drive.
@@ -151,13 +178,32 @@ pub fn drive_model_nodes(
             let Ok(mut transform) = transforms.get_mut(entity) else {
                 continue;
             };
-            // About Z, because Z is the axis facing the audience: turning a
-            // limb on a stage means turning it in the plane the audience
-            // sees, whatever the model's own idea of up happens to be.
-            transform.rotation = rest.rotation * Quat::from_rotation_z(angle);
+            // About world Z — the axis facing the audience — expressed in
+            // this node's own frame. Turning a limb on a stage means turning
+            // it in the plane the audience sees; using the node's local Z
+            // instead means a spine folds forward and an arm twists, because
+            // a rig's axes run along its bones and not along the room.
+            let world_rest = nodes
+                .world_rest
+                .get(&node.id)
+                .copied()
+                .unwrap_or(Quat::IDENTITY);
+            transform.rotation = rest.rotation * stage_turn(world_rest, angle);
             transform.translation = rest.translation + Vec3::new(offset.x, offset.y, 0.0);
         }
     }
+}
+
+/// A turn about the stage's own Z, written in a node's local frame.
+///
+/// Post-multiplying a node's rest rotation by this is the same as turning it
+/// about world Z: `world_rest * stage_turn(world_rest, a) == Rz(a) *
+/// world_rest`. That identity is the whole point, and the test below is its
+/// statement — it is the difference between an arm swinging across the frame
+/// and an arm twisting inside its own sleeve.
+pub fn stage_turn(world_rest: Quat, angle: f32) -> Quat {
+    let axis = (world_rest.inverse() * Vec3::Z).normalize_or(Vec3::Z);
+    Quat::from_axis_angle(axis, angle)
 }
 
 /// The nodes a rotation on this joint would carry, for the inspector's
@@ -238,6 +284,44 @@ mod tests {
     fn pixel_offsets_arrive_at_a_scale_a_model_can_use() {
         const { assert!(PX_TO_MODEL > 0.0 && PX_TO_MODEL < 0.1) };
         assert!((60.0 * PX_TO_MODEL - 0.6).abs() < 1e-5, "60px is 60cm");
+    }
+
+    /// **A bone's axes are not the stage's axes**, and this is the identity
+    /// that reconciles them. A spine bone in a biped rig points up its own X;
+    /// turning it about its local Z folds the torso forward, which is not
+    /// what "rotate" means to someone watching from the front.
+    #[test]
+    fn a_turn_reads_as_a_turn_whatever_way_the_bone_points() {
+        let angle = 0.6;
+        for rest in [
+            Quat::IDENTITY,
+            Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            Quat::from_rotation_y(1.1),
+            Quat::from_euler(EulerRot::XYZ, 0.3, -1.2, 2.0),
+        ] {
+            let composed = rest * stage_turn(rest, angle);
+            let wanted = Quat::from_rotation_z(angle) * rest;
+            // Compared by where they send a point rather than by
+            // `angle_between`, which is `acos` of a dot product very close to
+            // one and so reports a few ten-thousandths of noise for two
+            // rotations that are bit-for-bit the same.
+            for v in [Vec3::X, Vec3::Y, Vec3::Z] {
+                assert!(
+                    (composed * v).distance(wanted * v) < 1e-4,
+                    "a turn about the stage's Z, not the bone's: rest {rest:?}"
+                );
+            }
+        }
+    }
+
+    /// And it is still a turn of the size that was asked for — an axis
+    /// conversion that quietly changed the angle would be worse than one that
+    /// changed the plane.
+    #[test]
+    fn the_turn_keeps_its_size() {
+        let rest = Quat::from_euler(EulerRot::XYZ, 0.3, -1.2, 2.0);
+        let turn = stage_turn(rest, 0.6);
+        assert!((turn.to_axis_angle().1 - 0.6).abs() < 1e-4);
     }
 
     #[test]
