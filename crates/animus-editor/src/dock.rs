@@ -2434,7 +2434,12 @@ fn record_button(
         } else {
             egui::Stroke::NONE
         })
-        .corner_radius(theme::R_BADGE),
+        .corner_radius(theme::R_BADGE)
+        // As wide armed as disarmed. "REC" is shorter than "Arm record",
+        // and letting the button shrink slides TAP sideways at the exact
+        // moment the operator starts aiming at it — arming for a take is
+        // when a control least of all gets to move.
+        .min_size(egui::vec2(84.0, 0.0)),
     );
     let response = if allowed {
         response.on_hover_text(

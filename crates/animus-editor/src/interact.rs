@@ -97,6 +97,57 @@ fn world_to_puppet_img(
     crate::hit::stage_to_img(&doc.0, puppet, scale.ppu, world)
 }
 
+/// The queries model-node picking needs, bundled because the system that
+/// uses them is already at Bevy's parameter limit.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ModelPick<'w, 's> {
+    roots: Query<
+        'w,
+        's,
+        (
+            &'static animus_runtime::PuppetRoot,
+            &'static animus_runtime::ModelNodes,
+        ),
+    >,
+    globals: Query<'w, 's, &'static GlobalTransform>,
+}
+
+/// The model node under the cursor, if any — **the nearest one**, not the
+/// first one found.
+///
+/// Nearest matters more here than it does on a 2D rig: a glTF hand puts five
+/// finger chains inside one grab radius, and "whichever the iteration order
+/// happened to visit first" is a selection the operator cannot aim.
+///
+/// Tested in world XY, which on an orthographic stage camera is the same
+/// thing as screen distance — the equivalence the whole viewport rests on.
+fn model_node_at(
+    pick: &ModelPick,
+    doc: &DocumentRes,
+    world: Vec2,
+    radius: f32,
+) -> Option<(PuppetId, animus_core::ids::JointId)> {
+    let mut best: Option<((PuppetId, animus_core::ids::JointId), f32)> = None;
+    for (root, nodes) in &pick.roots {
+        // An invisible model keeps its nodes out of reach, the same way a
+        // hidden layer takes its 2D rig with it.
+        if !crate::hit::puppet_visible(&doc.0, root.0) {
+            continue;
+        }
+        for (&jid, &entity) in &nodes.by_joint {
+            let Ok(g) = pick.globals.get(entity) else {
+                continue;
+            };
+            let p = g.translation();
+            let d = Vec2::new(p.x, p.y).distance(world);
+            if d <= radius && best.is_none_or(|(_, bd)| d < bd) {
+                best = Some(((root.0, jid), d));
+            }
+        }
+    }
+    best.map(|(hit, _)| hit)
+}
+
 /// A layer being dragged across the stage.
 ///
 /// Separate from [`ActiveDrag`], which is about joints. The two never run at
@@ -215,6 +266,7 @@ pub fn apply_interactions(
         &animus_runtime::CompiledRigRef,
         &animus_runtime::PuppetSolver,
     )>,
+    model_pick: ModelPick,
 ) {
     let Some(input) = input.0 else { return };
     let Ok((camera, camera_xf)) = cameras.single() else {
@@ -378,7 +430,33 @@ pub fn apply_interactions(
                 _ => false,
             }) || !matches!(drag.0, DragState::Idle);
 
-            if building && !grabbed_a_joint {
+            // A click that missed every 2D joint may still be aimed at a
+            // model node — the tree was the only way to reach one, and a rig
+            // whose joints are drawn on the stage but only selectable from a
+            // panel is a lie about what the dots are for. A 2D joint under
+            // the same click wins, because grabbing it also *holds* it and a
+            // model node cannot be held yet; a model node beats the artwork
+            // below it, because it is drawn on top of that artwork.
+            let mut picked_model = false;
+            if !grabbed_a_joint
+                && let Some(pixel) = input.clicked_at
+                && let Some(world) =
+                    crate::viewport::camera::pixel_to_world(camera, camera_xf, pixel)
+                && let Some((mp, mj)) = model_node_at(
+                    &model_pick,
+                    &doc,
+                    world,
+                    crate::rig::JOINT_SCREEN_RADIUS_PX * world_per_pixel,
+                )
+            {
+                state.selection = Selection::Joint(mp, mj);
+                // A fresh selection starts from the pose on stage, not from
+                // whatever angle the previous selection left in the slider.
+                state.live_rotation = 0.0;
+                picked_model = true;
+            }
+
+            if building && !grabbed_a_joint && !picked_model {
                 let to_world =
                     |pixel: Vec2| crate::viewport::camera::pixel_to_world(camera, camera_xf, pixel);
                 // Handles are grabbed at a size in screen pixels, like joints:
@@ -1061,12 +1139,25 @@ pub fn keyboard_shortcuts(
 /// visually almost nothing. A shove across it swings the limb, which is what
 /// a hit on a drum machine is supposed to look like. The operator can point
 /// it anywhere afterwards; this is only where it starts.
-/// How hard a new track hits, in image pixels.
-///
-/// Big enough to read on a two-thousand-pixel drawing, small enough not to
-/// throw the limb off the stage. A model reads the same number as a swing —
-/// see `sequencer::RAD_PER_PIXEL`.
+/// How hard a new model track hits, in image pixels, read as a swing via
+/// `sequencer::RAD_PER_PIXEL` — about twenty-five degrees.
 const TRACK_SHOVE_PX: f32 = 24.0;
+
+/// How hard a new 2D track hits, as a fraction of the limb's own length.
+///
+/// **A constant in pixels was wrong at every size but one.** Twenty-four
+/// pixels reads on a five-hundred-pixel sketch and vanishes on a
+/// two-thousand-pixel painting — the joints visibly shivered a few screen
+/// pixels and the operator reasonably read it as broken rather than as small.
+/// The limb's length is the only ruler that is always in the right units,
+/// because it is drawn on the same image the shove moves.
+const TRACK_SHOVE_OF_LIMB: f32 = 0.6;
+
+/// And its floor and ceiling, in image pixels: a floor so a track on a
+/// stubby joint still does something, a ceiling so one on a legless
+/// two-metre spine does not fold the puppet in half.
+const TRACK_SHOVE_MIN: f32 = 24.0;
+const TRACK_SHOVE_MAX: f32 = 400.0;
 
 fn add_track_for_selection(
     seq: &mut animus_runtime::Sequencer,
@@ -1103,16 +1194,28 @@ fn add_track_for_selection(
     };
 
     let tree = animus_core::skeleton::rig_tree(&mesh.skeleton);
-    let along = tree
+    let bone = tree
         .parent(joint)
         .and_then(|p| mesh.skeleton.joints.get(&p))
         .map(|p| j.rest - p.rest)
-        .filter(|v| v.length_squared() > 1e-6)
-        .map(|v| v.normalize())
-        .unwrap_or(Vec2::Y);
-    // Perpendicular, at a size that reads on a 2000px drawing without
-    // throwing the limb off the stage.
-    let dir = Vec2::new(-along.y, along.x) * TRACK_SHOVE_PX;
+        .filter(|v| v.length_squared() > 1e-6);
+    // A root has no bone above it, so it borrows the one below: the shove
+    // still needs a length and a direction, and the first child is the limb
+    // the operator is looking at.
+    let bone = bone.or_else(|| {
+        tree.children(joint)
+            .iter()
+            .find_map(|c| mesh.skeleton.joints.get(c))
+            .map(|c| c.rest - j.rest)
+            .filter(|v| v.length_squared() > 1e-6)
+    });
+    let (along, limb) = match bone {
+        Some(v) => (v.normalize(), v.length()),
+        None => (Vec2::Y, TRACK_SHOVE_MIN / TRACK_SHOVE_OF_LIMB),
+    };
+    // Perpendicular, sized from the limb itself.
+    let shove = (limb * TRACK_SHOVE_OF_LIMB).clamp(TRACK_SHOVE_MIN, TRACK_SHOVE_MAX);
+    let dir = Vec2::new(-along.y, along.x) * shove;
 
     seq.add_track(j.name.clone(), puppet, joint, dir);
 }
